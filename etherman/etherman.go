@@ -117,6 +117,12 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	}
 	opts.NoSend = true
 
+	var firstSeq, lastSeq uint64
+	if len(sequences) > 0 {
+		firstSeq = sequences[0].BatchNumber
+		lastSeq = sequences[len(sequences)-1].BatchNumber
+	}
+
 	// Cost using calldata
 	tx, err := etherMan.sequenceBatchesData(opts, sequences, maxSequenceTimestamp, initSequenceBatchNumber, l2Coinbase)
 	if err != nil {
@@ -124,7 +130,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	}
 
 	estimateDataCost := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas())).Uint64()
-	log.Infof(">> tx DATA cost: %9d Gwei = %d gas x %d gasPrice", estimateDataCost/GWEI_DIV, tx.Gas(), tx.GasPrice().Uint64())
+	log.Infof("(%d-%d) >> tx DATA cost: %9d Gwei = %d gas x %d gasPrice", firstSeq, lastSeq, estimateDataCost/GWEI_DIV, tx.Gas(), tx.GasPrice().Uint64())
 
 	// Construct blob data
 	var blobBytes []byte
@@ -162,7 +168,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	})
 
 	estimateBlobCost := new(big.Int).Mul(blobFeeCap, new(big.Int).SetUint64(blobTx.BlobGas())).Uint64()
-	log.Infof(">> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobFeeCap.Uint64())
+	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobFeeCap.Uint64())
 
 	// Return the cheapest one
 	if estimateBlobCost < estimateDataCost {
