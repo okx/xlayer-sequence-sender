@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonrollupmanager"
-	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonzkevm"
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/log"
 	"github.com/ethereum/go-ethereum"
@@ -61,7 +60,7 @@ type L1Config struct {
 // Client is a simple implementation of EtherMan.
 type Client struct {
 	EthClient     ethereumClient
-	ZkEVM         *polygonzkevm.Polygonzkevm
+	ZkEVM         *polygonzkevmfeijoa.Polygonzkevm
 	RollupManager *polygonrollupmanager.Polygonrollupmanager
 
 	RollupID uint32
@@ -80,7 +79,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 		return nil, err
 	}
 	// Create smc clients
-	zkevm, err := polygonzkevm.NewPolygonzkevm(l1Config.ZkEVMAddr, ethClient)
+	zkevm, err := polygonzkevmfeijoa.NewPolygonzkevm(l1Config.ZkEVMAddr, ethClient)
 	if err != nil {
 		return nil, err
 	}
@@ -223,13 +222,13 @@ func (etherMan *Client) BuildSequenceBatchesTxBlob(sender common.Address, sequen
 }
 
 func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, maxSequenceTimestamp uint64, lastSequencedBatchNumber uint64, l2Coinbase common.Address) (*types.Transaction, error) {
-	var batches []polygonzkevm.PolygonRollupBaseEtrogBatchData
+	var batches []polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData
 	for _, seq := range sequences {
 		var ger common.Hash
 		if seq.ForcedBatchTimestamp > 0 {
 			ger = seq.GlobalExitRoot
 		}
-		batch := polygonzkevm.PolygonRollupBaseEtrogBatchData{
+		batch := polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData{
 			Transactions:         seq.BatchL2Data,
 			ForcedGlobalExitRoot: ger,
 			ForcedTimestamp:      uint64(seq.ForcedBatchTimestamp),
@@ -244,7 +243,7 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 		log.Debugf("Batches to send: %+v", batches)
 		log.Debug("l2CoinBase: ", l2Coinbase)
 		log.Debug("Sequencer address: ", opts.From)
-		a, err2 := polygonzkevm.PolygonzkevmMetaData.GetAbi()
+		a, err2 := polygonzkevmfeijoa.PolygonzkevmMetaData.GetAbi()
 		if err2 != nil {
 			log.Errorf("error getting abi: %v", err2)
 		}
@@ -280,13 +279,13 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 
 func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, maxSequenceTimestamp uint64, lastSequencedBatchNumber uint64, l2Coinbase common.Address) (*types.Transaction, error) {
 	// TMP: For testing purpose while the smart contracts are available
-	var batches []polygonzkevm.PolygonRollupBaseEtrogBatchData
+	var batches []polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData
 	for _, seq := range sequences {
 		var ger common.Hash
 		if seq.ForcedBatchTimestamp > 0 {
 			ger = seq.GlobalExitRoot
 		}
-		batch := polygonzkevm.PolygonRollupBaseEtrogBatchData{
+		batch := polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData{
 			Transactions:         seq.BatchL2Data,
 			ForcedGlobalExitRoot: ger,
 			ForcedTimestamp:      uint64(seq.ForcedBatchTimestamp),
@@ -296,7 +295,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		batches = append(batches, batch)
 	}
 
-	a, err := polygonzkevm.PolygonzkevmMetaData.GetAbi()
+	a, err := polygonzkevmfeijoa.PolygonzkevmMetaData.GetAbi()
 	if err != nil {
 		log.Errorf("error getting abi: %v", err)
 		return nil, err
@@ -388,15 +387,6 @@ func newKeyFromKeystore(path, password string) (*keystore.Key, error) {
 // SendTx sends a tx to L1
 func (etherMan *Client) SendTx(ctx context.Context, tx *types.Transaction) error {
 	return etherMan.EthClient.SendTransaction(ctx, tx)
-}
-
-// GetLatestBatchNumber function allows to retrieve the latest proposed batch in the smc
-func (etherMan *Client) GetLatestBatchNumber() (uint64, error) {
-	rollupData, err := etherMan.RollupManager.RollupIDToRollupData(&bind.CallOpts{Pending: false}, etherMan.RollupID)
-	if err != nil {
-		return 0, err
-	}
-	return rollupData.LastBatchSequenced, nil
 }
 
 // CurrentNonce returns the current nonce for the provided account

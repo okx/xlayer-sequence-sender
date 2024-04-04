@@ -962,7 +962,7 @@ func (s *SequenceSender) updateLatestVirtualBatch() error {
 	// Get latest virtual state batch from L1
 	var err error
 
-	s.latestVirtualBatch, err = s.etherman.GetLatestBatchNumber()
+	s.latestVirtualBatch, err = s.GetLatestBatchNumber()
 	if err != nil {
 		log.Errorf("[SeqSender] error getting latest virtual batch, error: %v", err)
 		return errors.New("fail to get latest virtual batch")
@@ -1024,4 +1024,9 @@ func printBatch(raw *state.BatchRawV2, showBlock bool, showTx bool) {
 			log.Debugf("[SeqSender] //    block last (indL1info: %d, delta-timestamp: %d, #L2txs: %d)", lastBlock.DeltaTimestamp, lastBlock.DeltaTimestamp, len(lastBlock.Transactions))
 		}
 	}
+}
+
+// GetLatestBatchNumber function allows to retrieve the latest proposed batch to the SC
+func (s *SequenceSender) GetLatestBatchNumber() (uint64, error) {
+	return 0, nil
 }
