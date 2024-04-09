@@ -95,6 +95,7 @@ type L2TxRaw struct {
 const (
 	changeL2Block = uint8(0x0b)
 	sizeUInt32    = 4
+	sizeUInt64    = 8
 )
 
 var (
@@ -182,8 +183,8 @@ func (b *BatchV2Encoder) GetResult() []byte {
 // Encode encodes a batch of l2blocks header into a byte slice.
 func (c ChangeL2BlockHeader) Encode(batchData []byte) []byte {
 	batchData = append(batchData, changeL2Block)
-	batchData = append(batchData, encodeUint32(c.DeltaTimestamp)...)
-	batchData = append(batchData, encodeUint32(c.IndexL1InfoTree)...)
+	batchData = append(batchData, EncodeUint32(c.DeltaTimestamp)...)
+	batchData = append(batchData, EncodeUint32(c.IndexL1InfoTree)...)
 	return batchData
 }
 
@@ -356,7 +357,8 @@ func decodeRLPListLengthFromOffset(txsData []byte, offset int) (uint64, error) {
 	return length + headerByteLength, nil
 }
 
-func encodeUint32(value uint32) []byte {
+// EncodeUint32 encodes a uint32 into a byte slice
+func EncodeUint32(value uint32) []byte {
 	data := make([]byte, sizeUInt32)
 	binary.BigEndian.PutUint32(data, value)
 	return data
@@ -367,4 +369,11 @@ func decodeUint32(txsData []byte, pos int) (int, uint32, error) {
 		return 0, 0, fmt.Errorf("can't get u32 because not enough data: %w", ErrInvalidBatchV2)
 	}
 	return pos + sizeUInt32, binary.BigEndian.Uint32(txsData[pos : pos+sizeUInt32]), nil
+}
+
+// EncodeUint64 encodes a uint64 into a byte slice
+func EncodeUint64(value uint64) []byte {
+	data := make([]byte, sizeUInt64)
+	binary.BigEndian.PutUint64(data, value)
+	return data
 }

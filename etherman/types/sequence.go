@@ -17,6 +17,7 @@ type Sequence struct {
 	BatchNumber                              uint64
 	ForcedBatchTimestamp                     int64
 	PrevBlockHash                            common.Hash
+	L1InfoTreeIndex                          uint32
 }
 
 // IsEmpty checks is sequence struct is empty

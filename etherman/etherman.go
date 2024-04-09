@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonrollupmanager"
+	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonzkevmfeijoa"
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/log"
+	"github.com/0xPolygonHermez/zkevm-sequence-sender/state"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -22,11 +24,26 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+	"github.com/iden3/go-iden3-crypto/keccak256"
 )
 
 var (
 	// ErrBlobOversizedData when blob data is longer than allowed
 	ErrBlobOversizedData = errors.New("blob data longer than allowed")
+	// ErrL1InfoLeafIndexLowerThanPrevious when l1 info tree index is lower than previous one within a blob data
+	ErrL1InfoLeafIndexLowerThanPrevious = errors.New("l1 info tree index value lower than previous value")
+)
+
+const (
+	blobTypeDataTx = 0
+	blobTypeBlobTx = 1
+	blobTypeForced = 2
+
+	blobCompressionNone      = 0x00
+	blobCompressionStateless = 0x01
+	blobCompressionFull      = 0x02
+
+	gasLimitPerBatch = uint64(100000000)
 )
 
 type ethereumClient interface {
@@ -60,7 +77,7 @@ type L1Config struct {
 // Client is a simple implementation of EtherMan.
 type Client struct {
 	EthClient     ethereumClient
-	ZkEVM         *polygonzkevmfeijoa.Polygonzkevm
+	ZkEVM         *polygonzkevmfeijoa.Polygonzkevmfeijoa
 	RollupManager *polygonrollupmanager.Polygonrollupmanager
 
 	RollupID uint32
@@ -68,6 +85,13 @@ type Client struct {
 	l1Cfg L1Config
 	cfg   Config
 	auth  map[common.Address]bind.TransactOpts // empty in case of read-only client
+}
+
+type sequenceBlobData struct {
+	maxSequenceTimestamp uint64
+	zkGasLimit           uint64
+	l1InfoLeafIndex      uint32
+	blobData             []byte
 }
 
 // NewClient creates a new etherman.
@@ -79,7 +103,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 		return nil, err
 	}
 	// Create smc clients
-	zkevm, err := polygonzkevmfeijoa.NewPolygonzkevm(l1Config.ZkEVMAddr, ethClient)
+	zkevm, err := polygonzkevmfeijoa.NewPolygonzkevmfeijoa(l1Config.ZkEVMAddr, ethClient)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +147,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	}
 
 	// Cost using calldata
-	tx, err := etherMan.sequenceBatchesData(opts, sequences, maxSequenceTimestamp, initSequenceBatchNumber, l2Coinbase)
+	tx, err := etherMan.sequenceBatchesData(opts, sequences, l2Coinbase)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +214,7 @@ func (etherMan *Client) BuildSequenceBatchesTxData(sender common.Address, sequen
 	opts.GasPrice = big.NewInt(1)
 
 	var tx *types.Transaction
-	tx, err = etherMan.sequenceBatchesData(opts, sequences, maxSequenceTimestamp, lastSequencedBatchNumber, l2Coinbase)
+	tx, err = etherMan.sequenceBatchesData(opts, sequences, l2Coinbase)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,33 +245,79 @@ func (etherMan *Client) BuildSequenceBatchesTxBlob(sender common.Address, sequen
 	return tx.To(), tx.Data(), tx.BlobTxSidecar(), nil
 }
 
-func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, maxSequenceTimestamp uint64, lastSequencedBatchNumber uint64, l2Coinbase common.Address) (*types.Transaction, error) {
-	var batches []polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData
-	for _, seq := range sequences {
-		var ger common.Hash
-		if seq.ForcedBatchTimestamp > 0 {
-			ger = seq.GlobalExitRoot
-		}
-		batch := polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData{
-			Transactions:         seq.BatchL2Data,
-			ForcedGlobalExitRoot: ger,
-			ForcedTimestamp:      uint64(seq.ForcedBatchTimestamp),
-			ForcedBlockHashL1:    seq.PrevBlockHash,
-		}
+func (etherMan *Client) prepareBlobData(sequences []ethmanTypes.Sequence) (*sequenceBlobData, error) {
+	var blobBody []byte
+	seqBlobData := &sequenceBlobData{}
 
-		batches = append(batches, batch)
+	for _, seq := range sequences {
+		// Sanity check
+		if seq.L1InfoTreeIndex > 0 && seq.L1InfoTreeIndex < seqBlobData.l1InfoLeafIndex {
+			return nil, ErrL1InfoLeafIndexLowerThanPrevious
+		}
+		// Update global blob data params
+		seqBlobData.maxSequenceTimestamp = uint64(seq.LastL2BLockTimestamp)
+		seqBlobData.l1InfoLeafIndex = seq.L1InfoTreeIndex
+		seqBlobData.zkGasLimit = seqBlobData.zkGasLimit + gasLimitPerBatch
+
+		// Batch data encoding
+		var batchData []byte
+		batchData = append(batchData, state.EncodeUint32(uint32(len(seq.BatchL2Data)))...)
+		batchData = append(batchData, seq.BatchL2Data...)
+
+		// Add batch to the blob body data
+		blobBody = append(blobBody, batchData...)
 	}
 
-	tx, err := etherMan.ZkEVM.SequenceBatches(&opts, batches, maxSequenceTimestamp, lastSequencedBatchNumber, l2Coinbase)
+	// Blob data = Blob header (compression type and blob body length) + Blob body
+	seqBlobData.blobData = make([]byte, 1)
+	seqBlobData.blobData[0] = blobCompressionNone
+	seqBlobData.blobData = append(seqBlobData.blobData, state.EncodeUint32(uint32(len(blobBody)))...)
+	seqBlobData.blobData = append(seqBlobData.blobData, blobBody...)
+
+	return seqBlobData, nil
+}
+
+func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, l2Coinbase common.Address) (*types.Transaction, error) {
+	// Prepare the batch sequence info
+	seqBlobData, err := etherMan.prepareBlobData(sequences)
 	if err != nil {
-		log.Debugf("Batches to send: %+v", batches)
+		return nil, err
+	}
+
+	// Prepare blob params
+	// TODO: use ABI encoder
+	var blobParams []byte
+	blobParams = append(blobParams, state.EncodeUint64(seqBlobData.maxSequenceTimestamp)...)
+	blobParams = append(blobParams, state.EncodeUint64(seqBlobData.zkGasLimit)...)
+	blobParams = append(blobParams, state.EncodeUint32(seqBlobData.l1InfoLeafIndex)...)
+	blobParams = append(blobParams, seqBlobData.blobData...)
+
+	blobData := []polygonzkevmfeijoa.PolygonRollupBaseFeijoaBlobData{
+		{
+			BlobType:       blobTypeDataTx,
+			BlobTypeParams: blobParams,
+		},
+	}
+
+	// TODO: Calculate the accumulated input hash
+	// SC call lastL1InfoTreeRoot (if index=0 -> root=0, no call needed)
+	var computeAccInputHash []byte
+	computeAccInputHash = append(computeAccInputHash, state.EncodeUint32(seqBlobData.l1InfoLeafIndex)...)
+	var finalAccInputHash [32]byte
+	copy(finalAccInputHash[:], keccak256.Hash(computeAccInputHash)[0:32])
+
+	// SC call
+	tx, err := etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, finalAccInputHash)
+	if err != nil {
+		log.Debugf("Batches to send: %+v", seqBlobData.blobData)
 		log.Debug("l2CoinBase: ", l2Coinbase)
+		log.Debug("accInputHash: ", finalAccInputHash)
 		log.Debug("Sequencer address: ", opts.From)
-		a, err2 := polygonzkevmfeijoa.PolygonzkevmMetaData.GetAbi()
+		a, err2 := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
 		if err2 != nil {
 			log.Errorf("error getting abi: %v", err2)
 		}
-		input, err3 := a.Pack("sequenceBatches", batches, maxSequenceTimestamp, lastSequencedBatchNumber, l2Coinbase)
+		input, err3 := a.Pack("sequenceBlobs", seqBlobData, l2Coinbase, finalAccInputHash)
 		if err3 != nil {
 			log.Errorf("error packing call: %v", err3)
 		}
@@ -278,50 +348,46 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 }
 
 func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, maxSequenceTimestamp uint64, lastSequencedBatchNumber uint64, l2Coinbase common.Address) (*types.Transaction, error) {
-	// TMP: For testing purpose while the smart contracts are available
-	var batches []polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData
-	for _, seq := range sequences {
-		var ger common.Hash
-		if seq.ForcedBatchTimestamp > 0 {
-			ger = seq.GlobalExitRoot
-		}
-		batch := polygonzkevmfeijoa.PolygonRollupBaseEtrogBatchData{
-			Transactions:         seq.BatchL2Data,
-			ForcedGlobalExitRoot: ger,
-			ForcedTimestamp:      uint64(seq.ForcedBatchTimestamp),
-			ForcedBlockHashL1:    seq.PrevBlockHash,
-		}
-
-		batches = append(batches, batch)
-	}
-
-	a, err := polygonzkevmfeijoa.PolygonzkevmMetaData.GetAbi()
+	// Prepare the batch sequence info
+	seqBlobData, err := etherMan.prepareBlobData(sequences)
 	if err != nil {
-		log.Errorf("error getting abi: %v", err)
-		return nil, err
-	}
-	input, err := a.Pack("sequenceBatches", batches, maxSequenceTimestamp, lastSequencedBatchNumber, l2Coinbase)
-	// input, err := a.Pack("pol")
-	if err != nil {
-		log.Errorf("error packing call: %v", err)
 		return nil, err
 	}
 
-	// Construct blob data
-	var blobBytes []byte
-	for _, batch := range batches {
-		blobBytes = append(blobBytes, batch.Transactions...)
-		blobBytes = append(blobBytes, batch.ForcedGlobalExitRoot[:]...)
-		blobBytes = binary.BigEndian.AppendUint64(blobBytes, batch.ForcedTimestamp)
-		blobBytes = append(blobBytes, batch.ForcedBlockHashL1[:]...)
-	}
-	blob, err := encodeBlobData(blobBytes)
+	// Construct blob tx data
+	blob, err := encodeBlobData(seqBlobData.blobData)
 	if err != nil {
 		log.Errorf("error encoding blob: %v", err)
 		return nil, err
 	}
 	sidecar := makeBlobSidecar([]kzg4844.Blob{blob})
 	blobHashes := sidecar.BlobHashes()
+
+	// Prepare blob params
+	// TODO: Use ABI encoder
+	var blobIndex [32]byte
+	var blobZ [32]byte
+	var blobY [32]byte
+	var blobParams []byte
+	blobParams = append(blobParams, state.EncodeUint64(seqBlobData.maxSequenceTimestamp)...)
+	blobParams = append(blobParams, state.EncodeUint64(seqBlobData.zkGasLimit)...)
+	blobParams = append(blobParams, state.EncodeUint32(seqBlobData.l1InfoLeafIndex)...)
+	blobParams = append(blobParams, blobIndex[:]...)
+	blobParams = append(blobParams, blobZ[:]...)
+	blobParams = append(blobParams, blobY[:]...)
+	for _, c := range sidecar.Commitments {
+		blobParams = append(blobParams, c[:]...)
+	}
+	for _, p := range sidecar.Proofs {
+		blobParams = append(blobParams, p[:]...)
+	}
+
+	blobData := []polygonzkevmfeijoa.PolygonRollupBaseFeijoaBlobData{
+		{
+			BlobType:       blobTypeBlobTx,
+			BlobTypeParams: blobParams,
+		},
+	}
 
 	// Transaction
 	blobTx := types.NewTx(&types.BlobTx{
@@ -331,7 +397,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		GasFeeCap:  uint256.MustFromBig(opts.GasFeeCap),
 		BlobFeeCap: uint256.NewInt(1),
 		BlobHashes: blobHashes,
-		Data:       input,
+		Data:       blobParams, //TODO: ABI encoder with selector: function selector | blobParams | l2Coinbase | finalAccInputHash
 		Sidecar:    sidecar,
 	})
 
@@ -339,6 +405,15 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	if err != nil {
 		return nil, err
 	}
+
+	// TODO: Calculate the accumulated input hash
+	var computeAccInputHash []byte
+	computeAccInputHash = append(computeAccInputHash, state.EncodeUint32(seqBlobData.l1InfoLeafIndex)...)
+	var finalAccInputHash [32]byte
+	copy(finalAccInputHash[:], keccak256.Hash(computeAccInputHash)[0:32])
+
+	// SC call
+	_, err = etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, finalAccInputHash)
 
 	return signedTx, err
 }
@@ -434,24 +509,23 @@ func (etherMan *Client) getAuthByAddress(addr common.Address) (bind.TransactOpts
 
 func encodeBlobData(data []byte) (kzg4844.Blob, error) {
 	dataLen := len(data)
+	// 1 Blob data length = 4096 Field elements x 31 bytes/field element = 126976 = 124KB
 	if dataLen > params.BlobTxFieldElementsPerBlob*(params.BlobTxBytesPerFieldElement-1) {
 		log.Infof("blob data longer than allowed (length: %v, limit: %v)", dataLen, params.BlobTxFieldElementsPerBlob*(params.BlobTxBytesPerFieldElement-1))
 		return kzg4844.Blob{}, ErrBlobOversizedData
 	}
 
-	// 1 Blob = 4096 Field elements x 32 bytes/field element = 128 KB
 	elemSize := params.BlobTxBytesPerFieldElement
-
 	blob := kzg4844.Blob{}
 	fieldIndex := -1
-	for i := 0; i < len(data); i += (elemSize - 1) {
+	for i := 0; i < dataLen; i += (elemSize - 1) {
 		fieldIndex++
 		if fieldIndex == params.BlobTxFieldElementsPerBlob {
 			break
 		}
 		max := i + (elemSize - 1)
-		if max > len(data) {
-			max = len(data)
+		if max > dataLen {
+			max = dataLen
 		}
 		copy(blob[fieldIndex*elemSize+1:], data[i:max])
 	}
