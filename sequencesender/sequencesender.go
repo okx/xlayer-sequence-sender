@@ -467,13 +467,13 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 	var data []byte
 	var sidecar *types.BlobTxSidecar
 	if !useBlobs {
-		to, data, err = s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+		to, data, err = s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
 		if err != nil {
 			log.Errorf("[SeqSender] error estimating new sequenceBatches as CallData to add to ethtxmanager: ", err)
 			return
 		}
 	} else {
-		to, data, sidecar, err = s.etherman.BuildSequenceBatchesTxBlob(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+		to, data, sidecar, err = s.etherman.BuildSequenceBatchesTxBlob(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
 		if err != nil {
 			log.Errorf("[SeqSender] error estimating new sequenceBatches as Blobs to add to ethtxmanager: ", err)
 			return
@@ -591,11 +591,9 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 		// Add new sequence
 		batch := *s.sequenceData[batchNumber].batch
 		sequences = append(sequences, batch)
-		firstSequence := sequences[0]
-		lastSequence := sequences[len(sequences)-1]
 
 		// Check if can be send
-		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
 		if err == nil {
 			useBlobs = tx.Type() == BLOB_TX_TYPE
 
@@ -611,8 +609,7 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 			if sequences != nil {
 				if len(sequences) > 0 {
 					// Handling the error gracefully, re-processing the sequence as a sanity check
-					lastSequence = sequences[len(sequences)-1]
-					tx, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+					tx, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
 					if err == nil {
 						useBlobs = tx.Type() == BLOB_TX_TYPE
 					}
