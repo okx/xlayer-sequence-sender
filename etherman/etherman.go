@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonrollupmanager"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonzkevmfeijoa"
@@ -430,18 +431,12 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	blobFeeCap := eip4844.CalcBlobFee(parentExcessBlobGas)
 
 	// Prepare data using ABI encoder
-	bytesTy, _ := abi.NewType("bytes", "", nil)
-	bytes20Ty, _ := abi.NewType("bytes20", "", nil)
-	byteTy, _ := abi.NewType("byte", "", nil)
-	dataArguments := abi.Arguments{
-		{Type: bytes32Ty},
-		{Type: byteTy},
-		{Type: bytesTy},
-		{Type: bytes20Ty},
-		{Type: bytes32Ty},
+	abiFeijoa, err := abi.JSON(strings.NewReader(polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.ABI))
+	if err != nil {
+		log.Errorf("error parsing JSON: %v", err)
+		return nil, err
 	}
-	selector := keccak256.Hash([]byte("sequenceBlobs"))[0:4]
-	dataParams, err := dataArguments.Pack(selector, blobData[0].BlobType, blobData[0].BlobTypeParams, l2Coinbase, finalAccInputHash)
+	dataParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, finalAccInputHash)
 	if err != nil {
 		log.Errorf("error packing arguments: %v", err)
 		return nil, err
