@@ -2,7 +2,6 @@ package etherman
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonrollupmanager"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonzkevmfeijoa"
+	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonzkevmglobalexitrootv2"
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/log"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/state"
@@ -77,9 +77,10 @@ type L1Config struct {
 
 // Client is a simple implementation of EtherMan.
 type Client struct {
-	EthClient     ethereumClient
-	ZkEVM         *polygonzkevmfeijoa.Polygonzkevmfeijoa
-	RollupManager *polygonrollupmanager.Polygonrollupmanager
+	EthClient      ethereumClient
+	ZkEVM          *polygonzkevmfeijoa.Polygonzkevmfeijoa
+	RollupManager  *polygonrollupmanager.Polygonrollupmanager
+	GlobalExitRoot *polygonzkevmglobalexitrootv2.Polygonzkevmglobalexitrootv2
 
 	RollupID uint32
 
@@ -112,6 +113,10 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	globalExitRoot, err := polygonzkevmglobalexitrootv2.NewPolygonzkevmglobalexitrootv2(l1Config.GlobalExitRootManagerAddr, ethClient)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get RollupID
 	rollupID, err := rollupManager.RollupAddressToID(&bind.CallOpts{Pending: false}, l1Config.ZkEVMAddr)
@@ -121,13 +126,14 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 	log.Debug("rollupID: ", rollupID)
 
 	return &Client{
-		EthClient:     ethClient,
-		ZkEVM:         zkevm,
-		RollupManager: rollupManager,
-		RollupID:      rollupID,
-		l1Cfg:         l1Config,
-		cfg:           cfg,
-		auth:          map[common.Address]bind.TransactOpts{},
+		EthClient:      ethClient,
+		ZkEVM:          zkevm,
+		RollupManager:  rollupManager,
+		GlobalExitRoot: globalExitRoot,
+		RollupID:       rollupID,
+		l1Cfg:          l1Config,
+		cfg:            cfg,
+		auth:           map[common.Address]bind.TransactOpts{},
 	}, nil
 }
 
@@ -147,7 +153,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 		lastSeq = sequences[len(sequences)-1].BatchNumber
 	}
 
-	// Cost using calldata
+	// Cost using calldata tx
 	tx, err := etherMan.sequenceBatchesData(opts, sequences, l2Coinbase)
 	if err != nil {
 		return nil, err
@@ -156,43 +162,14 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	estimateDataCost := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas())).Uint64()
 	log.Infof("(%d-%d) >> tx DATA cost: %9d Gwei = %d gas x %d gasPrice", firstSeq, lastSeq, estimateDataCost/GWEI_DIV, tx.Gas(), tx.GasPrice().Uint64())
 
-	// Construct blob data
-	var blobBytes []byte
-	for _, seq := range sequences {
-		blobBytes = append(blobBytes, seq.BatchL2Data...)
-		blobBytes = append(blobBytes, seq.GlobalExitRoot[:]...)
-		blobBytes = binary.BigEndian.AppendUint64(blobBytes, uint64(seq.ForcedBatchTimestamp))
-		blobBytes = append(blobBytes, seq.PrevBlockHash[:]...)
-	}
-	blob, err := encodeBlobData(blobBytes)
+	// Cost using blob tx
+	blobTx, err := etherMan.sequenceBatchesBlob(opts, sequences, l2Coinbase)
 	if err != nil {
 		return nil, err
 	}
-	sidecar := makeBlobSidecar([]kzg4844.Blob{blob})
-	blobHashes := sidecar.BlobHashes()
 
-	// Max Gas
-	parentHeader, err := etherMan.EthClient.HeaderByNumber(context.Background(), nil)
-	if err != nil {
-		log.Errorf("failed to get header from previous block: %v", err)
-		return nil, err
-	}
-	parentExcessBlobGas := eip4844.CalcExcessBlobGas(*parentHeader.ExcessBlobGas, *parentHeader.BlobGasUsed)
-	blobFeeCap := eip4844.CalcBlobFee(parentExcessBlobGas)
-
-	// Transaction
-	blobTx := types.NewTx(&types.BlobTx{
-		ChainID:    uint256.MustFromBig(tx.ChainId()),
-		GasTipCap:  uint256.MustFromBig(tx.GasTipCap()),
-		GasFeeCap:  uint256.MustFromBig(tx.GasFeeCap()),
-		To:         *tx.To(),
-		BlobFeeCap: uint256.MustFromBig(blobFeeCap),
-		BlobHashes: blobHashes,
-		Sidecar:    sidecar,
-	})
-
-	estimateBlobCost := new(big.Int).Mul(blobFeeCap, new(big.Int).SetUint64(blobTx.BlobGas())).Uint64()
-	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobFeeCap.Uint64())
+	estimateBlobCost := new(big.Int).Mul(blobTx.BlobGasFeeCap(), new(big.Int).SetUint64(blobTx.BlobGas())).Uint64()
+	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
 
 	// Return the cheapest one
 	if estimateBlobCost < estimateDataCost {
@@ -308,19 +285,18 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 		},
 	}
 
-	var oldAccInputHash common.Hash
-
 	// Calculate the accumulated input hash
-	// SC call lastL1InfoTreeRoot (if index=0 then root=0, no call is needed)
+	// Get lastL1InfoTreeRoot (if index==0 then root=0, no call is needed)
 	var lastL1InfoTreeRoot common.Hash
 	if seqBlobData.l1InfoLeafIndex > 0 {
-		oldAccInputHash, err = etherMan.ZkEVM.LastAccInputHash(&bind.CallOpts{Pending: false})
+		lastL1InfoTreeRoot, err = etherMan.GlobalExitRoot.L1InfoLeafMap(&bind.CallOpts{Pending: false}, big.NewInt(int64(seqBlobData.l1InfoLeafIndex)))
 		if err != nil {
-			log.Errorf("error calling SC LastAccInputHash: %v", err)
+			log.Errorf("error calling SC globalexitroot L1InfoLeafMap: %v", err)
 			return nil, err
 		}
 	}
 
+	var oldAccInputHash common.Hash
 	finalAccInputHash := calculateAccInputHash(oldAccInputHash, seqBlobData.l1InfoLeafIndex, lastL1InfoTreeRoot, seqBlobData.maxSequenceTimestamp, l2Coinbase,
 		seqBlobData.zkGasLimit, blobTypeDataTx, [32]byte{}, [32]byte{}, seqBlobData.blobData, common.Hash{})
 
@@ -429,6 +405,21 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		},
 	}
 
+	// Calculate the accumulated input hash
+	// Get lastL1InfoTreeRoot (if index==0 then root=0, no call is needed)
+	var lastL1InfoTreeRoot common.Hash
+	if seqBlobData.l1InfoLeafIndex > 0 {
+		lastL1InfoTreeRoot, err = etherMan.GlobalExitRoot.L1InfoLeafMap(&bind.CallOpts{Pending: false}, big.NewInt(int64(seqBlobData.l1InfoLeafIndex)))
+		if err != nil {
+			log.Errorf("error calling SC globalexitroot L1InfoLeafMap: %v", err)
+			return nil, err
+		}
+	}
+
+	var oldAccInputHash common.Hash
+	finalAccInputHash := calculateAccInputHash(oldAccInputHash, seqBlobData.l1InfoLeafIndex, lastL1InfoTreeRoot, seqBlobData.maxSequenceTimestamp, l2Coinbase,
+		seqBlobData.zkGasLimit, blobTypeDataTx, [32]byte{}, [32]byte{}, seqBlobData.blobData, common.Hash{})
+
 	// Max Gas
 	parentHeader, err := etherMan.EthClient.HeaderByNumber(context.Background(), nil)
 	if err != nil {
@@ -438,6 +429,24 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	parentExcessBlobGas := eip4844.CalcExcessBlobGas(*parentHeader.ExcessBlobGas, *parentHeader.BlobGasUsed)
 	blobFeeCap := eip4844.CalcBlobFee(parentExcessBlobGas)
 
+	// Prepare data using ABI encoder
+	bytesTy, _ := abi.NewType("bytes", "", nil)
+	bytes20Ty, _ := abi.NewType("bytes20", "", nil)
+	byteTy, _ := abi.NewType("byte", "", nil)
+	dataArguments := abi.Arguments{
+		{Type: bytes32Ty},
+		{Type: byteTy},
+		{Type: bytesTy},
+		{Type: bytes20Ty},
+		{Type: bytes32Ty},
+	}
+	selector := keccak256.Hash([]byte("sequenceBlobs"))[0:4]
+	dataParams, err := dataArguments.Pack(selector, blobData[0].BlobType, blobData[0].BlobTypeParams, l2Coinbase, finalAccInputHash)
+	if err != nil {
+		log.Errorf("error packing arguments: %v", err)
+		return nil, err
+	}
+
 	// Transaction
 	blobTx := types.NewTx(&types.BlobTx{
 		To:         etherMan.l1Cfg.ZkEVMAddr,
@@ -446,7 +455,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		GasFeeCap:  uint256.MustFromBig(opts.GasFeeCap),
 		BlobFeeCap: uint256.MustFromBig(blobFeeCap),
 		BlobHashes: blobHashes,
-		Data:       blobParams, //TODO: ABI encoder with selector: function selector | blobParams | l2Coinbase | finalAccInputHash
+		Data:       dataParams,
 		Sidecar:    sidecar,
 	})
 
@@ -454,15 +463,6 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	if err != nil {
 		return nil, err
 	}
-
-	// TODO: Calculate the accumulated input hash
-	var computeAccInputHash []byte
-	computeAccInputHash = append(computeAccInputHash, state.EncodeUint32(seqBlobData.l1InfoLeafIndex)...)
-	var finalAccInputHash [32]byte
-	copy(finalAccInputHash[:], keccak256.Hash(computeAccInputHash)[0:32])
-
-	// SC call
-	_, err = etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, finalAccInputHash)
 
 	return signedTx, err
 }

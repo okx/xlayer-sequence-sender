@@ -21,3 +21,4 @@ gen polygonrollupmanager
 # gen mockverifier
 # gen proxy
 gen polygonzkevmfeijoa
+gen polygonzkevmglobalexitrootv2
