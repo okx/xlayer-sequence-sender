@@ -384,7 +384,7 @@ func (s *State) internalProcessUnsignedTransaction(ctx context.Context, tx *type
 	if forkID < FORKID_ETROG {
 		return s.internalProcessUnsignedTransactionV1(ctx, tx, senderAddress, *batch, *l2Block, forkID, noZKEVMCounters, dbTx)
 	} else {
-		return s.internalProcessUnsignedTransactionV2(ctx, tx, senderAddress, *batch, *l2Block, forkID, noZKEVMCounters, dbTx)
+		return s.internalProcessUnsignedTransactionV2(ctx, tx, senderAddress, *batch, *l2Block, forkID, noZKEVMCounters)
 	}
 }
 
@@ -504,7 +504,7 @@ func (s *State) internalProcessUnsignedTransactionV1(ctx context.Context, tx *ty
 
 // internalProcessUnsignedTransactionV2 processes the given unsigned transaction.
 // post ETROG
-func (s *State) internalProcessUnsignedTransactionV2(ctx context.Context, tx *types.Transaction, senderAddress common.Address, batch Batch, l2Block L2Block, forkID uint64, noZKEVMCounters bool, dbTx pgx.Tx) (*ProcessBatchResponse, error) {
+func (s *State) internalProcessUnsignedTransactionV2(ctx context.Context, tx *types.Transaction, senderAddress common.Address, batch Batch, l2Block L2Block, forkID uint64, noZKEVMCounters bool) (*ProcessBatchResponse, error) {
 	var attempts = 1
 
 	if s.executorClient == nil {
@@ -800,7 +800,7 @@ func (s *State) EstimateGas(transaction *types.Transaction, senderAddress common
 	if forkID < FORKID_ETROG {
 		failed, reverted, gasUsed, returnValue, err = s.internalTestGasEstimationTransactionV1(ctx, batch, l2Block, latestL2BlockNumber, transaction, forkID, senderAddress, highEnd, nonce, false)
 	} else {
-		failed, reverted, gasUsed, returnValue, err = s.internalTestGasEstimationTransactionV2(ctx, batch, l2Block, latestL2BlockNumber, transaction, forkID, senderAddress, highEnd, nonce, false)
+		failed, reverted, gasUsed, returnValue, err = s.internalTestGasEstimationTransactionV2(ctx, batch, l2Block, transaction, forkID, senderAddress, highEnd, nonce, false)
 	}
 
 	if failed {
@@ -835,7 +835,7 @@ func (s *State) EstimateGas(transaction *types.Transaction, senderAddress common
 		if forkID < FORKID_ETROG {
 			failed, reverted, _, _, err = s.internalTestGasEstimationTransactionV1(ctx, batch, l2Block, latestL2BlockNumber, transaction, forkID, senderAddress, mid, nonce, true)
 		} else {
-			failed, reverted, _, _, err = s.internalTestGasEstimationTransactionV2(ctx, batch, l2Block, latestL2BlockNumber, transaction, forkID, senderAddress, mid, nonce, true)
+			failed, reverted, _, _, err = s.internalTestGasEstimationTransactionV2(ctx, batch, l2Block, transaction, forkID, senderAddress, mid, nonce, true)
 		}
 		executionTime := time.Since(txExecutionStart)
 		totalExecutionTime += executionTime
@@ -962,7 +962,7 @@ func (s *State) internalTestGasEstimationTransactionV1(ctx context.Context, batc
 // internalTestGasEstimationTransactionV2 is used by the EstimateGas to test the tx execution
 // during the binary search process to define the gas estimation of a given tx for l2 blocks
 // after ETROG
-func (s *State) internalTestGasEstimationTransactionV2(ctx context.Context, batch *Batch, l2Block *L2Block, latestL2BlockNumber uint64,
+func (s *State) internalTestGasEstimationTransactionV2(ctx context.Context, batch *Batch, l2Block *L2Block,
 	transaction *types.Transaction, forkID uint64, senderAddress common.Address,
 	gas uint64, nonce uint64, shouldOmitErr bool) (failed, reverted bool, gasUsed uint64, returnValue []byte, err error) {
 	deltaTimestamp := uint32(uint64(time.Now().Unix()) - l2Block.Time())

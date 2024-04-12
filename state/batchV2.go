@@ -84,7 +84,7 @@ func (s *State) ProcessBatchV2(ctx context.Context, request ProcessRequest, upda
 		processBatchRequest.SkipVerifyL1InfoRoot = cTrue
 	}
 
-	res, err := s.sendBatchRequestToExecutorV2(ctx, processBatchRequest, request.Caller)
+	res, err := s.sendBatchRequestToExecutorV2(ctx, processBatchRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func (s *State) ExecuteBatchV2(ctx context.Context, batch Batch, L1InfoTreeRoot 
 	return processBatchResponse, err
 }
 
-func (s *State) processBatchV2(ctx context.Context, processingCtx *ProcessingContextV2, caller metrics.CallerLabel, dbTx pgx.Tx) (*executor.ProcessBatchResponseV2, error) {
+func (s *State) processBatchV2(ctx context.Context, processingCtx *ProcessingContextV2, dbTx pgx.Tx) (*executor.ProcessBatchResponseV2, error) {
 	if dbTx == nil {
 		return nil, ErrDBTxNil
 	}
@@ -259,10 +259,10 @@ func (s *State) processBatchV2(ctx context.Context, processingCtx *ProcessingCon
 		processBatchRequest.L1InfoRoot = currentl1InfoRoot.Bytes()
 	}
 
-	return s.sendBatchRequestToExecutorV2(ctx, processBatchRequest, caller)
+	return s.sendBatchRequestToExecutorV2(ctx, processBatchRequest)
 }
 
-func (s *State) sendBatchRequestToExecutorV2(ctx context.Context, processBatchRequest *executor.ProcessBatchRequestV2, caller metrics.CallerLabel) (*executor.ProcessBatchResponseV2, error) {
+func (s *State) sendBatchRequestToExecutorV2(ctx context.Context, processBatchRequest *executor.ProcessBatchRequestV2) (*executor.ProcessBatchResponseV2, error) {
 	if s.executorClient == nil {
 		return nil, ErrExecutorNil
 	}
@@ -388,7 +388,7 @@ func (s *State) ProcessAndStoreClosedBatchV2(ctx context.Context, processingCtx 
 		log.Errorf("%s error OpenBatch: %v", debugPrefix, err)
 		return common.Hash{}, noFlushID, noProverID, err
 	}
-	processed, err := s.processBatchV2(ctx, &processingCtx, caller, dbTx)
+	processed, err := s.processBatchV2(ctx, &processingCtx, dbTx)
 	if err != nil {
 		log.Errorf("%s error processBatchV2: %v", debugPrefix, err)
 		return common.Hash{}, noFlushID, noProverID, err

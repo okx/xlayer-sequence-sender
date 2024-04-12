@@ -56,6 +56,7 @@ type SequenceSender struct {
 	latestStreamBatch   uint64                     // Latest batch received by the streaming
 	seqSendingStopped   bool                       // If there is a critical error
 	streamClient        *datastreamer.StreamClient
+	synchronizer        *Synchronizer
 }
 
 type sequenceData struct {
@@ -100,8 +101,14 @@ func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 	// Restore pending sent sequences
 	err := s.loadSentSequencesTransactions()
 	if err != nil {
-		log.Fatalf("[SeqSender] error restoring sent sequences from file", err)
+		log.Fatalf("[SeqSender] error restoring sent sequences from file: %v", err)
 		return nil, err
+	}
+
+	// Create local synchronizer
+	s.synchronizer, err = NewSynchronizer("sync.json")
+	if err != nil {
+		log.Fatalf("[SeqSender] error creating local synchronizer: %v", err)
 	}
 
 	// Create ethtxmanager client
@@ -466,14 +473,16 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 	var to *common.Address
 	var data []byte
 	var sidecar *types.BlobTxSidecar
+	var newAccInputHash common.Hash
+	oldAccInputHash := s.getLatestAccInputHash()
 	if !useBlobs {
-		to, data, err = s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
+		to, data, newAccInputHash, err = s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 		if err != nil {
 			log.Errorf("[SeqSender] error estimating new sequenceBatches as CallData to add to ethtxmanager: ", err)
 			return
 		}
 	} else {
-		to, data, sidecar, err = s.etherman.BuildSequenceBatchesTxBlob(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
+		to, data, sidecar, newAccInputHash, err = s.etherman.BuildSequenceBatchesTxBlob(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 		if err != nil {
 			log.Errorf("[SeqSender] error estimating new sequenceBatches as Blobs to add to ethtxmanager: ", err)
 			return
@@ -481,7 +490,7 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 	}
 
 	// Add sequence tx
-	err = s.sendTx(ctx, false, nil, to, firstSequence.BatchNumber, lastSequence.BatchNumber, data, sidecar)
+	err = s.sendTx(ctx, false, nil, to, firstSequence.BatchNumber, lastSequence.BatchNumber, data, sidecar, newAccInputHash)
 	if err != nil {
 		return
 	}
@@ -491,7 +500,7 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 }
 
 // sendTx adds transaction to the ethTxManager to send it to L1
-func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *common.Hash, to *common.Address, fromBatch uint64, toBatch uint64, data []byte, sidecar *types.BlobTxSidecar) error {
+func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *common.Hash, to *common.Address, fromBatch uint64, toBatch uint64, data []byte, sidecar *types.BlobTxSidecar, newAccInputHash common.Hash) error {
 	// Params if new tx to send or resend a previous tx
 	var paramTo *common.Address
 	var paramNonce *uint64
@@ -560,6 +569,18 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 	if err != nil {
 		log.Errorf("[SeqSender] error saving tx sequence sent, error: %v", err)
 	}
+
+	// Add entry to local synchronizer
+	err = s.synchronizer.AddEntry(SyncEntry{
+		SentTimestamp: txData.SentL1Timestamp,
+		AccInputHash:  newAccInputHash,
+		FromBatch:     txData.FromBatch,
+		ToBatch:       txData.ToBatch,
+	})
+	if err != nil {
+		log.Errorf("[SeqSender] error adding entry to local synchronizer: %v", err)
+	}
+
 	return nil
 }
 
@@ -593,7 +614,8 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 		sequences = append(sequences, batch)
 
 		// Check if can be send
-		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
+		oldAccInputHash := s.getLatestAccInputHash()
+		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 		if err == nil {
 			useBlobs = tx.Type() == BLOB_TX_TYPE
 
@@ -609,7 +631,7 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 			if sequences != nil {
 				if len(sequences) > 0 {
 					// Handling the error gracefully, re-processing the sequence as a sanity check
-					tx, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase)
+					tx, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 					if err == nil {
 						useBlobs = tx.Type() == BLOB_TX_TYPE
 					}
@@ -1026,5 +1048,19 @@ func printBatch(raw *state.BatchRawV2, showBlock bool, showTx bool) {
 
 // GetLatestBatchNumber function allows to retrieve the latest proposed batch to the SC
 func (s *SequenceSender) GetLatestBatchNumber() (uint64, error) {
-	return 0, nil
+	entry := s.synchronizer.GetLatestEntry()
+	if entry != nil {
+		return entry.ToBatch, nil
+	} else {
+		return 0, nil
+	}
+}
+
+func (s *SequenceSender) getLatestAccInputHash() common.Hash {
+	entry := s.synchronizer.GetLatestEntry()
+	if entry != nil {
+		return entry.AccInputHash
+	} else {
+		return common.Hash{}
+	}
 }
