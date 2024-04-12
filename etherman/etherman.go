@@ -163,22 +163,23 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	estimateDataCost := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas())).Uint64()
 	log.Infof("(%d-%d) >> tx DATA cost: %9d Gwei = %d gas x %d gasPrice", firstSeq, lastSeq, estimateDataCost/GWEI_DIV, tx.Gas(), tx.GasPrice().Uint64())
 
-	return tx, nil
 	// Cost using blob tx
-	// blobTx, _, err := etherMan.sequenceBatchesBlob(opts, sequences, l2Coinbase, oldAccInputHash)
-	// if err != nil {
-	// 	return nil, err
-	// }
+	opts.GasFeeCap = big.NewInt(1)
+	opts.GasTipCap = big.NewInt(1)
+	blobTx, _, err := etherMan.sequenceBatchesBlob(opts, sequences, l2Coinbase, oldAccInputHash)
+	if err != nil {
+		return nil, err
+	}
 
-	// estimateBlobCost := new(big.Int).Mul(blobTx.BlobGasFeeCap(), new(big.Int).SetUint64(blobTx.BlobGas())).Uint64()
-	// log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
+	estimateBlobCost := new(big.Int).Mul(blobTx.BlobGasFeeCap(), new(big.Int).SetUint64(blobTx.BlobGas())).Uint64()
+	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
 
 	// Return the cheapest one
-	// if estimateBlobCost < estimateDataCost {
-	// 	return blobTx, nil
-	// } else {
-	// 	return tx, nil
-	// }
+	if estimateBlobCost < estimateDataCost {
+		return blobTx, nil
+	} else {
+		return tx, nil
+	}
 }
 
 // BuildSequenceBatchesTxData builds a []bytes to be sent as calldata to the SC method SequenceBatches
@@ -362,19 +363,18 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	var blobIndex [32]byte
 	var pointZ [32]byte
 	var pointY [32]byte
-
-	var blobCommitment kzg4844.Commitment
-	var blobProof kzg4844.Proof
+	var blobCommitment []byte
+	var blobProof []byte
 	if len(sidecar.Commitments) > 0 {
-		blobCommitment = sidecar.Commitments[0]
-		blobProof = sidecar.Proofs[0]
+		blobCommitment = append([]byte{}, sidecar.Commitments[0][:]...)
+		blobProof = append([]byte{}, sidecar.Proofs[0][:]...)
 	}
 
 	// Prepare blob params using ABI encoder
 	uint64Ty, _ := abi.NewType("uint64", "", nil)
 	uint32Ty, _ := abi.NewType("uint32", "", nil)
 	bytes32Ty, _ := abi.NewType("bytes32", "", nil)
-	bytes48Ty, _ := abi.NewType("bytes48", "", nil)
+	bytesTy, _ := abi.NewType("bytes", "", nil)
 	arguments := abi.Arguments{
 		{Type: uint64Ty},
 		{Type: uint64Ty},
@@ -382,8 +382,8 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		{Type: bytes32Ty},
 		{Type: bytes32Ty},
 		{Type: bytes32Ty},
-		{Type: bytes48Ty},
-		{Type: bytes48Ty},
+		{Type: bytesTy},
+		{Type: bytesTy},
 	}
 	blobParams, err := arguments.Pack(
 		seqBlobData.maxSequenceTimestamp,
@@ -444,7 +444,6 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	// Transaction
 	blobTx := types.NewTx(&types.BlobTx{
 		To:         etherMan.l1Cfg.ZkEVMAddr,
-		Nonce:      opts.Nonce.Uint64(),
 		GasTipCap:  uint256.MustFromBig(opts.GasTipCap),
 		GasFeeCap:  uint256.MustFromBig(opts.GasFeeCap),
 		BlobFeeCap: uint256.MustFromBig(blobFeeCap),

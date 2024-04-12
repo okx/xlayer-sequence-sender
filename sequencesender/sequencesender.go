@@ -904,7 +904,11 @@ func (s *SequenceSender) addInfoSequenceBatch(l2BlockEnd state.DSL2BlockEnd) {
 // addNewBatchL2Block adds a new L2 block to the work in progress batch
 func (s *SequenceSender) addNewBatchL2Block(l2BlockStart state.DSL2BlockStart) {
 	s.mutexSequence.Lock()
-	log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
+	if l2BlockStart.L2BlockNumber%100 == 0 {
+		log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
+	} else {
+		log.Debugf("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
+	}
 
 	// Current batch
 	data := s.sequenceData[s.wipBatch]
