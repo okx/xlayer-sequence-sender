@@ -17,4 +17,5 @@ type ethermaner interface {
 	SendTx(ctx context.Context, tx *types.Transaction) error
 	LoadAuthFromKeyStore(path, password string) (*bind.TransactOpts, error)
 	NewAuthFromKeystore(path, password string, chainID uint64) (bind.TransactOpts, error)
+	LastAccInputHash() (common.Hash, error)
 }

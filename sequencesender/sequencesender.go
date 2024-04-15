@@ -40,7 +40,7 @@ type SequenceSender struct {
 	ethTxManager        *ethtxmanager.Client
 	etherman            ethermaner
 	currentNonce        uint64
-	latestVirtualBatch  uint64                     // Latest virtualized batch obtained from L1
+	latestVirtualBatch  uint64                     // Latest virtualized batch
 	latestVirtualTime   time.Time                  // Latest virtual batch timestamp
 	latestSentToL1Batch uint64                     // Latest batch sent to L1
 	wipBatch            uint64                     // Work in progress batch
@@ -148,6 +148,14 @@ func (s *SequenceSender) Start(ctx context.Context) {
 		log.Fatalf("[SeqSender] failed to get current nonce from %v, error: %v", s.cfg.L2Coinbase, err)
 	} else {
 		log.Infof("[SeqSender] current nonce for %v is %d", s.cfg.L2Coinbase, s.currentNonce)
+	}
+
+	// Get latest acc input hash
+	accInputHash, err := s.getLatestAccInputHash()
+	if err != nil {
+		log.Fatalf("[SeqSender] error getting latest acc input hash, error: %v", err)
+	} else {
+		log.Infof("[SeqSender] latest acc input hash is %v", accInputHash)
 	}
 
 	// Get latest virtual state batch from L1
@@ -474,7 +482,10 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 	var data []byte
 	var sidecar *types.BlobTxSidecar
 	var newAccInputHash common.Hash
-	oldAccInputHash := s.getLatestAccInputHash()
+	oldAccInputHash, err := s.getLatestAccInputHash()
+	if err != nil {
+		return
+	}
 	if !useBlobs {
 		to, data, newAccInputHash, err = s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 		if err != nil {
@@ -613,8 +624,12 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 		batch := *s.sequenceData[batchNumber].batch
 		sequences = append(sequences, batch)
 
+		// Get latest Acc Input Hash
+		oldAccInputHash, err := s.getLatestAccInputHash()
+		if err != nil {
+			return nil, false, err
+		}
 		// Check if can be send
-		oldAccInputHash := s.getLatestAccInputHash()
 		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 		if err == nil {
 			useBlobs = tx.Type() == BLOB_TX_TYPE
@@ -981,7 +996,7 @@ func (s *SequenceSender) getWipL2Block() (uint64, *state.L2BlockRaw) {
 	}
 }
 
-// updateLatestVirtualBatch queries the value in L1 and updates the latest virtual batch field
+// updateLatestVirtualBatch updates the latest virtual batch field
 func (s *SequenceSender) updateLatestVirtualBatch() error {
 	// Get latest virtual state batch from L1
 	var err error
@@ -1050,7 +1065,7 @@ func printBatch(raw *state.BatchRawV2, showBlock bool, showTx bool) {
 	}
 }
 
-// GetLatestBatchNumber function allows to retrieve the latest proposed batch to the SC
+// GetLatestBatchNumber allows to retrieve the latest proposed batch to the SC
 func (s *SequenceSender) GetLatestBatchNumber() (uint64, error) {
 	entry := s.synchronizer.GetLatestEntry()
 	if entry != nil {
@@ -1060,11 +1075,29 @@ func (s *SequenceSender) GetLatestBatchNumber() (uint64, error) {
 	}
 }
 
-func (s *SequenceSender) getLatestAccInputHash() common.Hash {
+// getLatestAccInputHash gets the latest Acc Input Hash
+func (s *SequenceSender) getLatestAccInputHash() (common.Hash, error) {
+	// AccInputHash from the local file synchronizer
 	entry := s.synchronizer.GetLatestEntry()
+	var accInputHashSync common.Hash
 	if entry != nil {
-		return entry.AccInputHash
+		accInputHashSync = entry.AccInputHash
 	} else {
-		return common.Hash{}
+		accInputHashSync = common.Hash{}
 	}
+
+	// AccInputHash from the SC
+	accInputHashL1, err := s.etherman.LastAccInputHash()
+	if err != nil {
+		log.Errorf("[SeqSender] error getting lastAccInputHash from SC: %v", err)
+		return common.Hash{}, err
+	}
+
+	// Sanity check
+	if accInputHashL1 != accInputHashSync {
+		log.Errorf("[SeqSender] last AccInputHash from the SC (%v) and the local sync (%v) don't match", accInputHashL1, accInputHashSync)
+		return common.Hash{}, errors.New("lastAccInputHash sanity check failed")
+	}
+
+	return accInputHashSync, nil
 }

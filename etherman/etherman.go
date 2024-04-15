@@ -105,7 +105,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 		log.Errorf("error connecting to %s: %+v", cfg.EthermanConfig.URL, err)
 		return nil, err
 	}
-	// Create smc clients
+	// Create SC clients
 	zkevm, err := polygonzkevmfeijoa.NewPolygonzkevmfeijoa(l1Config.ZkEVMAddr, ethClient)
 	if err != nil {
 		return nil, err
@@ -175,7 +175,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
 
 	// Return the cheapest one
-	if estimateBlobCost < estimateDataCost {
+	if estimateBlobCost*10000 < estimateDataCost {
 		return blobTx, nil
 	} else {
 		return tx, nil
@@ -226,6 +226,7 @@ func (etherMan *Client) BuildSequenceBatchesTxBlob(sender common.Address, sequen
 	return tx.To(), tx.Data(), tx.BlobTxSidecar(), newAccInputHash, nil
 }
 
+// prepareBlobData prepares the sequence information to be sent as a blob data
 func (etherMan *Client) prepareBlobData(sequences []ethmanTypes.Sequence) (*sequenceBlobData, error) {
 	var blobBody []byte
 	seqBlobData := &sequenceBlobData{}
@@ -258,6 +259,7 @@ func (etherMan *Client) prepareBlobData(sequences []ethmanTypes.Sequence) (*sequ
 	return seqBlobData, nil
 }
 
+// sequenceBatchesData generates an Ethereum transaction of type calldata for sending the blob data sequence
 func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, l2Coinbase common.Address, oldAccInputHash common.Hash) (*types.Transaction, common.Hash, error) {
 	// Prepare the batch sequence info
 	seqBlobData, err := etherMan.prepareBlobData(sequences)
@@ -343,6 +345,7 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 	return tx, newAccInputHash, err
 }
 
+// sequenceBatchesBlob generates an Ethereum transaction of type blob for sending the blob data sequence
 func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, l2Coinbase common.Address, oldAccInputHash common.Hash) (*types.Transaction, common.Hash, error) {
 	// Prepare the batch sequence info
 	seqBlobData, err := etherMan.prepareBlobData(sequences)
@@ -532,23 +535,12 @@ func (etherMan *Client) getAuthByAddress(addr common.Address) (bind.TransactOpts
 	return auth, nil
 }
 
-// generateRandomAuth generates an authorization instance from a
-// randomly generated private key to be used to estimate gas for PoE
-// operations NOT restricted to the Trusted Sequencer
-// func (etherMan *Client) generateRandomAuth() (bind.TransactOpts, error) {
-// 	privateKey, err := crypto.GenerateKey()
-// 	if err != nil {
-// 		return bind.TransactOpts{}, errors.New("failed to generate a private key to estimate L1 txs")
-// 	}
-// 	chainID := big.NewInt(0).SetUint64(etherMan.l1Cfg.L1ChainID)
-// 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainID)
-// 	if err != nil {
-// 		return bind.TransactOpts{}, errors.New("failed to generate a fake authorization to estimate L1 txs")
-// 	}
+// LastAccInputHash gets the last acc input hash from the SC
+func (etherMan *Client) LastAccInputHash() (common.Hash, error) {
+	return etherMan.ZkEVM.LastAccInputHash(&bind.CallOpts{Pending: false})
+}
 
-// 	return *auth, nil
-// }
-
+// encodeBlobData encodes data to be sent as a blob via an Ethereum blob transaction
 func encodeBlobData(data []byte) (kzg4844.Blob, error) {
 	dataLen := len(data)
 	// 1 Blob data length = 4096 Field elements x 31 bytes/field element = 126976 = 124KB
@@ -574,6 +566,7 @@ func encodeBlobData(data []byte) (kzg4844.Blob, error) {
 	return blob, nil
 }
 
+// makeBlobSidecar generates the necessary sidecar data to send blob in an Ethereum blob transaction
 func makeBlobSidecar(blobs []kzg4844.Blob) *types.BlobTxSidecar {
 	var commitments []kzg4844.Commitment
 	var proofs []kzg4844.Proof
@@ -593,6 +586,7 @@ func makeBlobSidecar(blobs []kzg4844.Blob) *types.BlobTxSidecar {
 	}
 }
 
+// calculateAccInputHash calculates the accumulated input hash
 func calculateAccInputHash(oldBlobAccInputHash common.Hash, lastL1InfoTreeIndex uint32, lastL1InfoTreeRoot common.Hash, timestampLimit uint64, sequencerAddress common.Address,
 	zkGasLimit uint64, blobType byte, pointZ common.Hash, pointY common.Hash, blobL2HashData []byte, forcedHashData common.Hash) common.Hash {
 	// Convert values to byte slices
