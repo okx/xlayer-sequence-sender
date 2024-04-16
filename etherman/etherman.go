@@ -175,7 +175,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
 
 	// Return the cheapest one
-	if estimateBlobCost*10000 < estimateDataCost {
+	if estimateBlobCost < estimateDataCost {
 		return blobTx, nil
 	} else {
 		return tx, nil

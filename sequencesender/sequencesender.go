@@ -295,12 +295,14 @@ func (s *SequenceSender) purgeEthTx(ctx context.Context) {
 func (s *SequenceSender) syncEthTxResults(ctx context.Context) (uint64, error) {
 	s.mutexEthTx.Lock()
 	var txPending uint64
+	var txSync uint64
 	for hash, data := range s.ethTransactions {
 		if data.Status == ethtxmanager.MonitoredTxStatusFinalized.String() {
 			continue
 		}
 
 		_ = s.getResultAndUpdateEthTx(ctx, hash)
+		txSync++
 		txStatus := s.ethTransactions[hash].Status
 		// Count if it is not in a final state
 		if s.ethTransactions[hash].OnMonitor &&
@@ -318,6 +320,7 @@ func (s *SequenceSender) syncEthTxResults(ctx context.Context) (uint64, error) {
 		log.Errorf("[SeqSender] error saving tx sequence, error: %v", err)
 	}
 
+	log.Infof("[SeqSender] %d tx results synchronized (%d in pending state)", txSync, txPending)
 	return txPending, nil
 }
 
@@ -326,11 +329,12 @@ func (s *SequenceSender) syncAllEthTxResults(ctx context.Context) error {
 	// Get all results
 	results, err := s.ethTxManager.ResultsByStatus(ctx, nil)
 	if err != nil {
-		log.Errorf("[SeqSender] error getting results for all tx: %v", err)
+		log.Warnf("[SeqSender] error getting results for all tx: %v", err)
 		return err
 	}
 
 	// Check and update tx status
+	numResults := len(results)
 	s.mutexEthTx.Lock()
 	for _, result := range results {
 		txSequence, exists := s.ethTransactions[result.ID]
@@ -356,6 +360,7 @@ func (s *SequenceSender) syncAllEthTxResults(ctx context.Context) error {
 		log.Errorf("[SeqSender] error saving tx sequence, error: %v", err)
 	}
 
+	log.Infof("[SeqSender] %d tx results synchronized", numResults)
 	return nil
 }
 
@@ -686,21 +691,17 @@ func (s *SequenceSender) handleEstimateGasSendSequenceErr(sequences []ethmanType
 	}
 	if isDataForEthTxTooBig(err) {
 		// Remove the latest item and send the sequences
-		log.Infof(
-			"Done building sequences, selected batches to %d. Batch %d caused the L1 tx to be too big",
-			currentBatchNumToSequence-1, currentBatchNumToSequence,
-		)
-		sequences = sequences[:len(sequences)-1]
-		return sequences, nil
+		log.Infof("Done building sequences, selected batches to %d. Batch %d caused the L1 tx to be too big: %v", currentBatchNumToSequence-1, currentBatchNumToSequence, err)
+	} else {
+		// Remove the latest item and send the sequences
+		log.Infof("Done building sequences, selected batches to %d. Batch %d excluded due to unknown error: %v", currentBatchNumToSequence, currentBatchNumToSequence+1, err)
 	}
 
-	// Remove the latest item and send the sequences
-	log.Infof(
-		"Done building sequences, selected batches to %d. Batch %d excluded due to unknown error: %v",
-		currentBatchNumToSequence, currentBatchNumToSequence+1, err,
-	)
-	sequences = sequences[:len(sequences)-1]
-
+	if len(sequences) > 1 {
+		sequences = sequences[:len(sequences)-1]
+	} else {
+		sequences = nil
+	}
 	return sequences, nil
 }
 
@@ -922,7 +923,7 @@ func (s *SequenceSender) addNewBatchL2Block(l2BlockStart state.DSL2BlockStart) {
 	if l2BlockStart.L2BlockNumber%100 == 0 {
 		log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
 	} else {
-		log.Debugf("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
+		log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
 	}
 
 	// Current batch
