@@ -428,7 +428,7 @@ func (s *SequenceSender) getResultAndUpdateEthTx(ctx context.Context, txHash com
 		// Resend tx?
 		// _ = s.sendTx(ctx, true, &txHash, nil, 0, 0, nil)
 	} else if err != nil {
-		log.Errorf("[SeqSender] error getting result for tx %v: %v", txHash, err)
+		log.Warnf("[SeqSender] error getting result for tx %v: %v", txHash, err)
 		return err
 	} else {
 		s.updateEthTxResult(txData, txResult)
@@ -606,6 +606,7 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 	s.mutexSequence.Lock()
 	defer s.mutexSequence.Unlock()
 	useBlobs := false
+	var prevCoinbase common.Address
 	sequences := []ethmanTypes.Sequence{}
 	for i := 0; i < len(s.sequenceList); i++ {
 		batchNumber := s.sequenceList[i]
@@ -625,8 +626,17 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 			break
 		}
 
-		// Add new sequence
+		// New potential batch to add to the sequence
 		batch := *s.sequenceData[batchNumber].batch
+
+		// If the coinbase changes, the sequence ends here
+		if len(sequences) > 0 && batch.LastCoinbase != prevCoinbase {
+			log.Infof("[SeqSender] batch with different coinbase (batch %v, sequence %v), sequence will be sent to this point", prevCoinbase, batch.LastCoinbase)
+			return sequences, useBlobs, nil
+		}
+		prevCoinbase = batch.LastCoinbase
+
+		// Add new sequence
 		sequences = append(sequences, batch)
 
 		// Get latest Acc Input Hash
@@ -884,6 +894,7 @@ func (s *SequenceSender) addNewSequenceBatch(l2BlockStart state.DSL2BlockStart) 
 		GlobalExitRoot:       l2BlockStart.GlobalExitRoot,
 		LastL2BLockTimestamp: l2BlockStart.Timestamp,
 		BatchNumber:          l2BlockStart.BatchNumber,
+		LastCoinbase:         l2BlockStart.Coinbase,
 	}
 
 	// Add to the list
@@ -920,10 +931,10 @@ func (s *SequenceSender) addInfoSequenceBatch(l2BlockEnd state.DSL2BlockEnd) {
 // addNewBatchL2Block adds a new L2 block to the work in progress batch
 func (s *SequenceSender) addNewBatchL2Block(l2BlockStart state.DSL2BlockStart) {
 	s.mutexSequence.Lock()
-	if l2BlockStart.L2BlockNumber%100 == 0 {
+	if l2BlockStart.L2BlockNumber%10 == 0 {
 		log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
 	} else {
-		log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
+		log.Debugf("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
 	}
 
 	// Current batch
@@ -931,6 +942,11 @@ func (s *SequenceSender) addNewBatchL2Block(l2BlockStart state.DSL2BlockStart) {
 	if data != nil {
 		wipBatchRaw := data.batchRaw
 		data.batch.LastL2BLockTimestamp = l2BlockStart.Timestamp
+		// Sanity check: should be the same coinbase within the batch
+		if l2BlockStart.Coinbase != data.batch.LastCoinbase {
+			s.logFatalf("[SeqSender] coinbase changed within the batch! (Previous %v, Current %v)", data.batch.LastCoinbase, l2BlockStart.Coinbase)
+		}
+		data.batch.LastCoinbase = l2BlockStart.Coinbase
 
 		// New L2 block raw
 		newBlockRaw := state.L2BlockRaw{}

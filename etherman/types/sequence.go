@@ -18,6 +18,7 @@ type Sequence struct {
 	ForcedBatchTimestamp                     int64
 	PrevBlockHash                            common.Hash
 	L1InfoTreeIndex                          uint32
+	LastCoinbase                             common.Address
 }
 
 // IsEmpty checks is sequence struct is empty
