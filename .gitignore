@@ -29,3 +29,5 @@ cmd/__debug_bin
 sequencesender.json
 ethtxmanager.json
 sync.json
+test/config/*
+test/*.keystore
