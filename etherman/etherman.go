@@ -175,7 +175,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
 
 	// Return the cheapest one
-	if estimateBlobCost < estimateDataCost {
+	if estimateBlobCost*10000000 < estimateDataCost {
 		return blobTx, nil
 	} else {
 		return tx, nil
@@ -307,36 +307,7 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 	// SC call
 	tx, err := etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, newAccInputHash)
 	if err != nil {
-		log.Debugf("Batches to send: %+v", seqBlobData.blobData)
-		log.Debug("l2CoinBase: ", l2Coinbase)
-		log.Debug("accInputHash: ", newAccInputHash)
-		log.Debug("Sequencer address: ", opts.From)
-		a, err2 := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
-		if err2 != nil {
-			log.Errorf("error getting abi: %v", err2)
-		}
-		input, err3 := a.Pack("sequenceBlobs", blobData, l2Coinbase, newAccInputHash)
-		if err3 != nil {
-			log.Errorf("error packing call: %v", err3)
-		}
-		ctx := context.Background()
-		var b string
-		block, err4 := etherMan.EthClient.BlockByNumber(ctx, nil)
-		if err4 != nil {
-			log.Errorf("error getting blockNumber: %v", err4)
-			b = "latest"
-		} else {
-			b = fmt.Sprintf("%x", block.Number())
-		}
-		log.Warnf(`Use the next command to debug it manually.
-		curl --location --request POST 'http://localhost:8545' \
-		--header 'Content-Type: application/json' \
-		--data-raw '{
-			"jsonrpc": "2.0",
-			"method": "eth_call",
-			"params": [{"from": "%s","to":"%s","data":"0x%s"},"0x%s"],
-			"id": 1
-		}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, common.Bytes2Hex(input), b)
+		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash)
 		if parsedErr, ok := tryParseError(err); ok {
 			err = parsedErr
 		}
@@ -366,11 +337,10 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	var blobIndex [32]byte
 	var pointZ [32]byte
 	var pointY [32]byte
-	var blobCommitment []byte
-	var blobProof []byte
+	var blobCommitmentProof []byte
 	if len(sidecar.Commitments) > 0 {
-		blobCommitment = append([]byte{}, sidecar.Commitments[0][:]...)
-		blobProof = append([]byte{}, sidecar.Proofs[0][:]...)
+		blobCommitmentProof = append([]byte{}, sidecar.Commitments[0][:]...)
+		blobCommitmentProof = append(blobCommitmentProof, sidecar.Proofs[0][:]...)
 	}
 
 	// Prepare blob params using ABI encoder
@@ -386,7 +356,6 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		{Type: bytes32Ty},
 		{Type: bytes32Ty},
 		{Type: bytesTy},
-		{Type: bytesTy},
 	}
 	blobParams, err := arguments.Pack(
 		seqBlobData.maxSequenceTimestamp,
@@ -395,8 +364,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		blobIndex,
 		pointZ,
 		pointY,
-		blobCommitment,
-		blobProof)
+		blobCommitmentProof)
 	if err != nil {
 		log.Errorf("error packing arguments: %v", err)
 		return nil, common.Hash{}, err
@@ -421,7 +389,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 
 	// Calculate the accumulated input hash
 	newAccInputHash := calculateAccInputHash(oldAccInputHash, seqBlobData.l1InfoLeafIndex, lastL1InfoTreeRoot, seqBlobData.maxSequenceTimestamp, l2Coinbase,
-		seqBlobData.zkGasLimit, blobTypeDataTx, [32]byte{}, [32]byte{}, seqBlobData.blobData, common.Hash{})
+		seqBlobData.zkGasLimit, blobTypeBlobTx, [32]byte{}, [32]byte{}, []byte{}, common.Hash{})
 
 	// Max Gas
 	parentHeader, err := etherMan.EthClient.HeaderByNumber(context.Background(), nil)
@@ -438,7 +406,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		log.Errorf("error parsing JSON: %v", err)
 		return nil, common.Hash{}, err
 	}
-	dataParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, newAccInputHash)
+	inputParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, newAccInputHash)
 	if err != nil {
 		log.Errorf("error packing arguments: %v", err)
 		return nil, common.Hash{}, err
@@ -451,13 +419,15 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 		GasFeeCap:  uint256.MustFromBig(opts.GasFeeCap),
 		BlobFeeCap: uint256.MustFromBig(blobFeeCap),
 		BlobHashes: blobHashes,
-		Data:       dataParams,
+		Data:       inputParams,
 		Sidecar:    sidecar,
 	})
 
 	signedTx, err := opts.Signer(opts.From, blobTx)
 	if err != nil {
 		return nil, common.Hash{}, err
+	} else {
+		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash)
 	}
 
 	return signedTx, newAccInputHash, err
@@ -538,6 +508,61 @@ func (etherMan *Client) getAuthByAddress(addr common.Address) (bind.TransactOpts
 // LastAccInputHash gets the last acc input hash from the SC
 func (etherMan *Client) LastAccInputHash() (common.Hash, error) {
 	return etherMan.ZkEVM.LastAccInputHash(&bind.CallOpts{Pending: false})
+}
+
+// dumpCurlCall dumps log info to make the curl call from the command line
+func (etherMan *Client) dumpCurlCall(opts *bind.TransactOpts, l2Coinbase common.Address, seqBlobData *sequenceBlobData,
+	blobData *[]polygonzkevmfeijoa.PolygonRollupBaseFeijoaBlobData, accInputHash common.Hash) {
+	// Log info
+	log.Infof("l2CoinBase: %v", l2Coinbase)
+	log.Infof("sequencer: %v", opts.From)
+	log.Infof("accInputHash: %v", accInputHash)
+	log.Infof("seq.maxSequenceTimestamp: %v", seqBlobData.maxSequenceTimestamp)
+	log.Infof("seq.zkGasLimit: %v", seqBlobData.zkGasLimit)
+	log.Infof("seq.l1InfoLeafIndex: %v", seqBlobData.l1InfoLeafIndex)
+	if len(*blobData) > 0 {
+		log.Infof("BlobType: %v", (*blobData)[0].BlobType)
+		log.Infof("BlobTypeParams (length %d)", len((*blobData)[0].BlobTypeParams))
+	} else {
+		log.Infof("Empty blobData!")
+	}
+
+	abiFeijoa, err := abi.JSON(strings.NewReader(polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.ABI))
+	if err != nil {
+		log.Errorf("error parsing JSON: %v", err)
+		return
+	}
+	inputParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
+	if err != nil {
+		log.Errorf("error packing arguments: %v", err)
+		return
+	}
+	// abiFeijoa, err := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
+	// if err != nil {
+	// 	log.Errorf("error getting abi: %v", err)
+	// }
+	// input, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
+	// if err != nil {
+	// 	log.Errorf("error packing call: %v", err)
+	// }
+	ctx := context.Background()
+	block, err := etherMan.EthClient.BlockByNumber(ctx, nil)
+	var blockStr string
+	if err != nil {
+		log.Errorf("error getting blockNumber: %v", err)
+		blockStr = "latest"
+	} else {
+		blockStr = fmt.Sprintf("%x", block.Number())
+	}
+	log.Infof(`Use the next command to debug it manually.
+		curl --location --request POST 'http://localhost:8545' \
+		--header 'Content-Type: application/json' \
+		--data-raw '{
+			"jsonrpc": "2.0",
+			"method": "eth_call",
+			"params": [{"from": "%s","to":"%s","data":"0x%s"},"0x%s"], %d
+			"id": 1
+		}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, "" /*common.Bytes2Hex(inputParams),*/, blockStr, len(inputParams))
 }
 
 // encodeBlobData encodes data to be sent as a blob via an Ethereum blob transaction
@@ -627,12 +652,19 @@ func calculateAccInputHash(oldBlobAccInputHash common.Hash, lastL1InfoTreeIndex 
 	for len(v9) < 32 {
 		v9 = append([]byte{0}, v9...)
 	}
+
+	if blobType == blobTypeDataTx {
+		// Hash of the data
+		v10 = keccak256.Hash(v10)
+	} else {
+		for len(v10) < 32 {
+			v10 = append([]byte{0}, v10...)
+		}
+	}
+
 	for len(v11) < 32 {
 		v11 = append([]byte{0}, v11...)
 	}
-
-	// Hash of the data
-	v10 = keccak256.Hash(v10)
 
 	// Keccak hash of the entire data set
 	return common.BytesToHash(keccak256.Hash(v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11))
