@@ -732,6 +732,8 @@ func (s *SequenceSender) saveSentSequencesTransactions(ctx context.Context) erro
 // handleReceivedDataStream manages the events received by the streaming
 func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *datastreamer.StreamClient, ss *datastreamer.StreamServer) error {
 	switch e.Type {
+	// case EntryType_ENTRY_TYPE_L2_BLOCK:
+
 	case state.EntryTypeL2BlockStart:
 		// Handle stream entry: Start L2 Block
 		l2BlockStart := state.DSL2BlockStart{}.Decode(e.Data)
