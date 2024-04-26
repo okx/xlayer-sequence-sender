@@ -20,7 +20,9 @@ import (
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/log"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/state"
+	"github.com/0xPolygonHermez/zkevm-sequence-sender/state/datastream"
 	"github.com/ethereum/go-ethereum/common"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -462,7 +464,7 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 	printSequences(sequences)
 
 	// Build sequence data
-	to, data, err := s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+	to, data, err := s.etherman.BuildSequenceBatchesTxData(s.cfg.SenderAddress, sequences, lastSequence.LastL2BLockTimestamp, firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
 	if err != nil {
 		log.Errorf("[SeqSender] error estimating new sequenceBatches to add to ethtxmanager: ", err)
 		return
@@ -592,7 +594,7 @@ func (s *SequenceSender) getSequencesToSend() ([]types.Sequence, error) {
 		lastSequence := sequences[len(sequences)-1]
 
 		// Check if can be send
-		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, lastSequence.LastL2BLockTimestamp, firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
 
 		if err == nil && tx.Size() > s.cfg.MaxTxSizeForL1 {
 			log.Infof("[SeqSender] oversized Data on TX oldHash %s (txSize %d > %d)", tx.Hash(), tx.Size(), s.cfg.MaxTxSizeForL1)
@@ -605,7 +607,7 @@ func (s *SequenceSender) getSequencesToSend() ([]types.Sequence, error) {
 			if sequences != nil {
 				// Handling the error gracefully, re-processing the sequence as a sanity check
 				lastSequence = sequences[len(sequences)-1]
-				_, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, uint64(lastSequence.LastL2BLockTimestamp), firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
+				_, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, lastSequence.LastL2BLockTimestamp, firstSequence.BatchNumber-1, s.cfg.L2Coinbase)
 				return sequences, err
 			}
 			return sequences, err
@@ -731,30 +733,37 @@ func (s *SequenceSender) saveSentSequencesTransactions(ctx context.Context) erro
 
 // handleReceivedDataStream manages the events received by the streaming
 func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *datastreamer.StreamClient, ss *datastreamer.StreamServer) error {
-	switch e.Type {
-	case state.EntryTypeL2BlockStart:
-		// Handle stream entry: Start L2 Block
-		l2BlockStart := state.DSL2BlockStart{}.Decode(e.Data)
+	dsType := datastream.EntryType(e.Type)
+
+	switch dsType {
+	case datastream.EntryType_ENTRY_TYPE_L2_BLOCK:
+		// Handle stream entry: L2Block
+		l2Block := &datastream.L2Block{}
+		err := proto.Unmarshal(e.Data, l2Block)
+		if err != nil {
+			log.Errorf("[SeqSender] error unmarshalling L2Block: %v", err)
+			return err
+		}
 
 		// Already virtualized
-		if l2BlockStart.BatchNumber <= s.fromStreamBatch {
-			if l2BlockStart.BatchNumber != s.latestStreamBatch {
-				log.Infof("[SeqSender] skipped! batch already virtualized, number %d", l2BlockStart.BatchNumber)
+		if l2Block.BatchNumber <= s.fromStreamBatch {
+			if l2Block.BatchNumber != s.latestStreamBatch {
+				log.Infof("[SeqSender] skipped! batch already virtualized, number %d", l2Block.BatchNumber)
 			}
-		} else if !s.validStream && l2BlockStart.BatchNumber == s.fromStreamBatch+1 {
+		} else if !s.validStream && l2Block.BatchNumber == s.fromStreamBatch+1 {
 			// Initial case after startup
-			s.addNewSequenceBatch(l2BlockStart)
+			s.addNewSequenceBatch(l2Block)
 			s.validStream = true
 		}
 
 		// Latest stream batch
-		s.latestStreamBatch = l2BlockStart.BatchNumber
+		s.latestStreamBatch = l2Block.BatchNumber
 		if !s.validStream {
 			return nil
 		}
 
 		// Handle whether it's only a new block or also a new batch
-		if l2BlockStart.BatchNumber > s.wipBatch {
+		if l2Block.BatchNumber > s.wipBatch {
 			// New batch in the sequence
 			// Close current batch
 			err := s.closeSequenceBatch()
@@ -764,35 +773,45 @@ func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *
 			}
 
 			// Create new sequential batch
-			s.addNewSequenceBatch(l2BlockStart)
+			s.addNewSequenceBatch(l2Block)
 		}
 
 		// Add L2 block
-		s.addNewBatchL2Block(l2BlockStart)
+		s.addNewBatchL2Block(l2Block)
 
-	case state.EntryTypeL2Tx:
-		// Handle stream entry: L2 Tx
+	case datastream.EntryType_ENTRY_TYPE_TRANSACTION:
+		// Handle stream entry: Transaction
 		if !s.validStream {
 			return nil
 		}
 
-		l2Tx := state.DSL2Transaction{}
-		l2Tx = l2Tx.Decode(e.Data)
+		l2Tx := &datastream.Transaction{}
+		err := proto.Unmarshal(e.Data, l2Tx)
+		if err != nil {
+			log.Errorf("[SeqSender] error unmarshalling Transaction: %v", err)
+			return err
+		}
 
 		// Add tx data
 		s.addNewBlockTx(l2Tx)
 
-	case state.EntryTypeL2BlockEnd:
-		// Handle stream entry: End L2 Block
-		l2BlockEnd := state.DSL2BlockEnd{}.Decode(e.Data)
-
+	case datastream.EntryType_ENTRY_TYPE_BATCH:
+		// Handle stream entry: Batch
 		if !s.validStream {
 			return nil
 		}
 
-		// Add end block data
-		s.addInfoSequenceBatch(l2BlockEnd)
+		batch := &datastream.Batch{}
+		err := proto.Unmarshal(e.Data, batch)
+		if err != nil {
+			log.Errorf("[SeqSender] error unmarshalling Batch: %v", err)
+			return err
+		}
+
+		// Add batch data
+		s.addInfoSequenceBatch(batch)
 	}
+
 	return nil
 }
 
@@ -818,26 +837,26 @@ func (s *SequenceSender) closeSequenceBatch() error {
 }
 
 // addNewSequenceBatch adds a new batch to the sequence
-func (s *SequenceSender) addNewSequenceBatch(l2BlockStart state.DSL2BlockStart) {
+func (s *SequenceSender) addNewSequenceBatch(l2Block *datastream.L2Block) {
 	s.mutexSequence.Lock()
-	log.Infof("[SeqSender] ...new batch, number %d", l2BlockStart.BatchNumber)
+	log.Infof("[SeqSender] ...new batch, number %d", l2Block.BatchNumber)
 
-	if l2BlockStart.BatchNumber > s.wipBatch+1 {
-		s.logFatalf("[SeqSender] new batch number (%d) is not consecutive to the current one (%d)", l2BlockStart.BatchNumber, s.wipBatch)
-	} else if l2BlockStart.BatchNumber < s.wipBatch {
-		s.logFatalf("[SeqSender] new batch number (%d) is lower than the current one (%d)", l2BlockStart.BatchNumber, s.wipBatch)
+	if l2Block.BatchNumber > s.wipBatch+1 {
+		s.logFatalf("[SeqSender] new batch number (%d) is not consecutive to the current one (%d)", l2Block.BatchNumber, s.wipBatch)
+	} else if l2Block.BatchNumber < s.wipBatch {
+		s.logFatalf("[SeqSender] new batch number (%d) is lower than the current one (%d)", l2Block.BatchNumber, s.wipBatch)
 	}
 
 	// Create sequence
 	sequence := types.Sequence{
-		GlobalExitRoot:       l2BlockStart.GlobalExitRoot,
-		LastL2BLockTimestamp: l2BlockStart.Timestamp,
-		BatchNumber:          l2BlockStart.BatchNumber,
-		LastCoinbase:         l2BlockStart.Coinbase,
+		GlobalExitRoot:       common.BytesToHash(l2Block.GlobalExitRoot),
+		LastL2BLockTimestamp: l2Block.Timestamp,
+		BatchNumber:          l2Block.BatchNumber,
+		LastCoinbase:         common.BytesToAddress(l2Block.Coinbase),
 	}
 
 	// Add to the list
-	s.sequenceList = append(s.sequenceList, l2BlockStart.BatchNumber)
+	s.sequenceList = append(s.sequenceList, l2Block.BatchNumber)
 
 	// Create initial data
 	batchRaw := state.BatchRawV2{}
@@ -846,42 +865,47 @@ func (s *SequenceSender) addNewSequenceBatch(l2BlockStart state.DSL2BlockStart) 
 		batch:       &sequence,
 		batchRaw:    &batchRaw,
 	}
-	s.sequenceData[l2BlockStart.BatchNumber] = &data
+	s.sequenceData[l2Block.BatchNumber] = &data
 
 	// Update wip batch
-	s.wipBatch = l2BlockStart.BatchNumber
+	s.wipBatch = l2Block.BatchNumber
 	s.mutexSequence.Unlock()
 }
 
-// addInfoSequenceBatch adds info from the block end data
-func (s *SequenceSender) addInfoSequenceBatch(l2BlockEnd state.DSL2BlockEnd) {
+// addInfoSequenceBatch adds info from the batch
+func (s *SequenceSender) addInfoSequenceBatch(batch *datastream.Batch) {
 	s.mutexSequence.Lock()
 
 	// Current batch
 	data := s.sequenceData[s.wipBatch]
 	if data != nil {
 		wipBatch := data.batch
-		wipBatch.StateRoot = l2BlockEnd.StateRoot
+		if wipBatch.BatchNumber == batch.Number {
+			wipBatch.StateRoot = common.BytesToHash(batch.StateRoot)
+		} else {
+			s.logFatalf("[SeqSender] batch number (%d) does not match the current one (%d)", batch.Number, wipBatch.BatchNumber)
+		}
 	}
 
 	s.mutexSequence.Unlock()
 }
 
 // addNewBatchL2Block adds a new L2 block to the work in progress batch
-func (s *SequenceSender) addNewBatchL2Block(l2BlockStart state.DSL2BlockStart) {
+func (s *SequenceSender) addNewBatchL2Block(l2Block *datastream.L2Block) {
 	s.mutexSequence.Lock()
-	log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2BlockStart.L2BlockNumber, l2BlockStart.BatchNumber)
+	log.Infof("[SeqSender] .....new L2 block, number %d (batch %d)", l2Block.Number, l2Block.BatchNumber)
 
 	// Current batch
 	data := s.sequenceData[s.wipBatch]
 	if data != nil {
 		wipBatchRaw := data.batchRaw
-		data.batch.LastL2BLockTimestamp = l2BlockStart.Timestamp
+		data.batch.LastL2BLockTimestamp = l2Block.Timestamp
 		// Sanity check: should be the same coinbase within the batch
-		if l2BlockStart.Coinbase != data.batch.LastCoinbase {
-			s.logFatalf("[SeqSender] coinbase changed within the batch! (Previous %v, Current %v)", data.batch.LastCoinbase, l2BlockStart.Coinbase)
+		if common.BytesToAddress(l2Block.Coinbase) != data.batch.LastCoinbase {
+			s.logFatalf("[SeqSender] coinbase changed within the batch! (Previous %v, Current %v)", data.batch.LastCoinbase, common.BytesToAddress(l2Block.Coinbase))
 		}
-		data.batch.LastCoinbase = l2BlockStart.Coinbase
+		data.batch.LastCoinbase = common.BytesToAddress(l2Block.Coinbase)
+		data.batch.StateRoot = common.BytesToHash(l2Block.StateRoot)
 
 		// New L2 block raw
 		newBlockRaw := state.L2BlockRaw{}
@@ -897,17 +921,17 @@ func (s *SequenceSender) addNewBatchL2Block(l2BlockStart state.DSL2BlockStart) {
 		}
 
 		// Fill in data
-		blockRaw.DeltaTimestamp = l2BlockStart.DeltaTimestamp
-		blockRaw.IndexL1InfoTree = l2BlockStart.L1InfoTreeIndex
+		blockRaw.DeltaTimestamp = l2Block.DeltaTimestamp
+		blockRaw.IndexL1InfoTree = l2Block.L1InfotreeIndex
 	}
 
 	s.mutexSequence.Unlock()
 }
 
 // addNewBlockTx adds a new Tx to the current L2 block
-func (s *SequenceSender) addNewBlockTx(l2Tx state.DSL2Transaction) {
+func (s *SequenceSender) addNewBlockTx(l2Tx *datastream.Transaction) {
 	s.mutexSequence.Lock()
-	log.Debugf("[SeqSender] ........new tx, length %d EGP %d SR %x..", l2Tx.EncodedLength, l2Tx.EffectiveGasPricePercentage, l2Tx.StateRoot[:8])
+	log.Debugf("[SeqSender] ........new tx, length %d EGP %d SR %x..", len(l2Tx.Encoded), l2Tx.EffectiveGasPricePercentage, l2Tx.ImStateRoot[:8])
 
 	// Current L2 block
 	_, blockRaw := s.getWipL2Block()
