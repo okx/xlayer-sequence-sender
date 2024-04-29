@@ -125,7 +125,7 @@ func New(cfg Config, etherman *etherman.Client) (*SequenceSender, error) {
 	return &s, nil
 }
 
-// Start starts the sequence sender
+// Start starts sequence sender
 func (s *SequenceSender) Start(ctx context.Context) {
 	// Start ethtxmanager client
 	go s.ethTxManager.Start()
