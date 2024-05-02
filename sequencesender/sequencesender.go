@@ -803,21 +803,37 @@ func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *
 		// Add tx data
 		s.addNewBlockTx(l2Tx)
 
-	case datastream.EntryType_ENTRY_TYPE_BATCH:
-		// Handle stream entry: Batch
+	case datastream.EntryType_ENTRY_TYPE_BATCH_START:
+		// Handle stream entry: BatchStart
 		if !s.validStream {
 			return nil
 		}
 
-		batch := &datastream.Batch{}
+		batch := &datastream.BatchStart{}
 		err := proto.Unmarshal(e.Data, batch)
 		if err != nil {
-			log.Errorf("[SeqSender] error unmarshalling Batch: %v", err)
+			log.Errorf("[SeqSender] error unmarshalling BatchStart: %v", err)
 			return err
 		}
 
-		// Add batch data
-		s.addInfoSequenceBatch(batch)
+		// Add batch start data
+		s.addInfoSequenceBatchStart(batch)
+
+	case datastream.EntryType_ENTRY_TYPE_BATCH_END:
+		// Handle stream entry: BatchEnd
+		if !s.validStream {
+			return nil
+		}
+
+		batch := &datastream.BatchEnd{}
+		err := proto.Unmarshal(e.Data, batch)
+		if err != nil {
+			log.Errorf("[SeqSender] error unmarshalling BatchEnd: %v", err)
+			return err
+		}
+
+		// Add batch end data
+		s.addInfoSequenceBatchEnd(batch)
 	}
 
 	return nil
@@ -880,8 +896,25 @@ func (s *SequenceSender) addNewSequenceBatch(l2Block *datastream.L2Block) {
 	s.mutexSequence.Unlock()
 }
 
-// addInfoSequenceBatch adds info from the batch
-func (s *SequenceSender) addInfoSequenceBatch(batch *datastream.Batch) {
+// addInfoSequenceBatchStart adds info from the batch start
+func (s *SequenceSender) addInfoSequenceBatchStart(batch *datastream.BatchStart) {
+	s.mutexSequence.Lock()
+	log.Infof("[SeqSender] batch %d Start: forkId %d chainId %d", batch.Number, batch.ForkId, batch.ChainId)
+
+	// Current batch
+	data := s.sequenceData[s.wipBatch]
+	if data != nil {
+		wipBatch := data.batch
+		if wipBatch.BatchNumber+1 != batch.Number {
+			s.logFatalf("[SeqSender] batch start number (%d) does not match the current consecutive one (%d)", batch.Number, wipBatch.BatchNumber)
+		}
+	}
+
+	s.mutexSequence.Unlock()
+}
+
+// addInfoSequenceBatchEnd adds info from the batch end
+func (s *SequenceSender) addInfoSequenceBatchEnd(batch *datastream.BatchEnd) {
 	s.mutexSequence.Lock()
 
 	// Current batch
@@ -891,7 +924,7 @@ func (s *SequenceSender) addInfoSequenceBatch(batch *datastream.Batch) {
 		if wipBatch.BatchNumber == batch.Number {
 			wipBatch.StateRoot = common.BytesToHash(batch.StateRoot)
 		} else {
-			s.logFatalf("[SeqSender] batch number (%d) does not match the current one (%d)", batch.Number, wipBatch.BatchNumber)
+			s.logFatalf("[SeqSender] batch end number (%d) does not match the current one (%d)", batch.Number, wipBatch.BatchNumber)
 		}
 	}
 
