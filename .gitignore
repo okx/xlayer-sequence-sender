@@ -22,6 +22,7 @@
 out.dat
 
 cmd/__debug_bin
+dum*.json
 
 .venv
 

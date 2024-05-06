@@ -2,12 +2,13 @@ package etherman
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonrollupmanager"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman/smartcontracts/polygonzkevmfeijoa"
@@ -27,6 +28,11 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 	"github.com/iden3/go-iden3-crypto/keccak256"
+)
+
+const (
+	// BLOB_TX_TYPE is a blob transaction type
+	BLOB_TX_TYPE = byte(0x03)
 )
 
 var (
@@ -142,7 +148,7 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequences []ethmanTypes.Sequence, l2Coinbase common.Address, oldAccInputHash common.Hash) (*types.Transaction, error) {
 	const GWEI_DIV = 1000000000
 
-	opts, err := etherMan.getAuthByAddress(sender)
+	opts, err := etherMan.GetAuthByAddress(sender)
 	if err == ErrNotFound {
 		return nil, ErrPrivateKeyNotFound
 	}
@@ -184,7 +190,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 
 // BuildSequenceBatchesTxData builds a []bytes to be sent as calldata to the SC method SequenceBatches
 func (etherMan *Client) BuildSequenceBatchesTxData(sender common.Address, sequences []ethmanTypes.Sequence, l2Coinbase common.Address, oldAccInputHash common.Hash) (to *common.Address, data []byte, newAccInputHash common.Hash, err error) {
-	opts, err := etherMan.getAuthByAddress(sender)
+	opts, err := etherMan.GetAuthByAddress(sender)
 	if err == ErrNotFound {
 		return nil, nil, common.Hash{}, fmt.Errorf("failed to build sequence batches: %w", ErrPrivateKeyNotFound)
 	}
@@ -205,7 +211,7 @@ func (etherMan *Client) BuildSequenceBatchesTxData(sender common.Address, sequen
 
 // BuildSequenceBatchesTxBlob builds a types.BlobTxSidecar to be sent as blobs to the SC method SequenceBatchesBlob
 func (etherMan *Client) BuildSequenceBatchesTxBlob(sender common.Address, sequences []ethmanTypes.Sequence, l2Coinbase common.Address, oldAccInputHash common.Hash) (to *common.Address, data []byte, sidecar *types.BlobTxSidecar, newAccInputHash common.Hash, err error) {
-	opts, err := etherMan.getAuthByAddress(sender)
+	opts, err := etherMan.GetAuthByAddress(sender)
 	if err == ErrNotFound {
 		return nil, nil, nil, common.Hash{}, fmt.Errorf("failed to build sequence batches: %w", ErrPrivateKeyNotFound)
 	}
@@ -306,8 +312,9 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 
 	// SC call
 	tx, err := etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, newAccInputHash)
+	etherMan.dumpCurlCallTx(opts, *tx, false, true)
 	if err != nil {
-		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash)
+		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash, []common.Hash{}, false)
 		if parsedErr, ok := tryParseError(err); ok {
 			err = parsedErr
 		}
@@ -401,7 +408,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	blobFeeCap := eip4844.CalcBlobFee(parentExcessBlobGas)
 
 	// Prepare data using ABI encoder
-	abiFeijoa, err := abi.JSON(strings.NewReader(polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.ABI))
+	abiFeijoa, err := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
 	if err != nil {
 		log.Errorf("error parsing JSON: %v", err)
 		return nil, common.Hash{}, err
@@ -424,10 +431,10 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	})
 
 	signedTx, err := opts.Signer(opts.From, blobTx)
+	etherMan.dumpCurlCallTx(opts, *blobTx, false, true)
 	if err != nil {
+		// etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash, blobHashes, false)
 		return nil, common.Hash{}, err
-	} else {
-		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash)
 	}
 
 	return signedTx, newAccInputHash, err
@@ -496,8 +503,8 @@ func (etherMan *Client) LoadAuthFromKeyStore(path, password string) (*bind.Trans
 	return &auth, nil
 }
 
-// getAuthByAddress tries to get an authorization from the authorizations map
-func (etherMan *Client) getAuthByAddress(addr common.Address) (bind.TransactOpts, error) {
+// GetAuthByAddress tries to get an authorization from the authorizations map
+func (etherMan *Client) GetAuthByAddress(addr common.Address) (bind.TransactOpts, error) {
 	auth, found := etherMan.auth[addr]
 	if !found {
 		return bind.TransactOpts{}, ErrNotFound
@@ -512,57 +519,172 @@ func (etherMan *Client) LastAccInputHash() (common.Hash, error) {
 
 // dumpCurlCall dumps log info to make the curl call from the command line
 func (etherMan *Client) dumpCurlCall(opts *bind.TransactOpts, l2Coinbase common.Address, seqBlobData *sequenceBlobData,
-	blobData *[]polygonzkevmfeijoa.PolygonRollupBaseFeijoaBlobData, accInputHash common.Hash) {
-	// Log info
-	log.Infof("l2CoinBase: %v", l2Coinbase)
-	log.Infof("sequencer: %v", opts.From)
-	log.Infof("accInputHash: %v", accInputHash)
-	log.Infof("seq.maxSequenceTimestamp: %v", seqBlobData.maxSequenceTimestamp)
-	log.Infof("seq.zkGasLimit: %v", seqBlobData.zkGasLimit)
-	log.Infof("seq.l1InfoLeafIndex: %v", seqBlobData.l1InfoLeafIndex)
-	if len(*blobData) > 0 {
-		log.Infof("BlobType: %v", (*blobData)[0].BlobType)
-		log.Infof("BlobTypeParams (length %d)", len((*blobData)[0].BlobTypeParams))
-	} else {
-		log.Infof("Empty blobData!")
+	blobData *[]polygonzkevmfeijoa.PolygonRollupBaseFeijoaBlobData, accInputHash common.Hash, blobHashes []common.Hash, dumpScreen bool) {
+	if dumpScreen {
+		// Log info
+		log.Infof("l2CoinBase: %v", l2Coinbase)
+		log.Infof("sequencer: %v", opts.From)
+		log.Infof("accInputHash: %v", accInputHash)
+		log.Infof("seq.maxSequenceTimestamp: %v", seqBlobData.maxSequenceTimestamp)
+		log.Infof("seq.zkGasLimit: %v", seqBlobData.zkGasLimit)
+		log.Infof("seq.l1InfoLeafIndex: %v", seqBlobData.l1InfoLeafIndex)
+		var isBlobTx bool
+		if len(*blobData) > 0 {
+			isBlobTx = (*blobData)[0].BlobType == blobTypeBlobTx
+			log.Infof("BlobType: %v", (*blobData)[0].BlobType)
+			log.Infof("BlobTypeParams (length %d)", len((*blobData)[0].BlobTypeParams))
+		} else {
+			isBlobTx = false
+			log.Infof("Empty blobData!")
+		}
+
+		abiFeijoa, err := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
+		if err != nil {
+			log.Errorf("error parsing JSON: %v", err)
+			return
+		}
+		inputParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
+		if err != nil {
+			log.Errorf("error packing arguments: %v", err)
+			return
+		}
+		log.Infof("inputData (length %d)", len(inputParams))
+
+		ctx := context.Background()
+		block, err := etherMan.EthClient.BlockByNumber(ctx, nil)
+		var blockStr string
+		if err != nil {
+			log.Errorf("error getting blockNumber: %v", err)
+			blockStr = "latest"
+		} else {
+			blockStr = fmt.Sprintf("0x%x", block.Number())
+		}
+
+		if !isBlobTx {
+			log.Infof(`Use the next command to debug it manually.
+			curl --location --request POST 'http://localhost:8545' \
+			--header 'Content-Type: application/json' \
+			--data-raw '{
+				"jsonrpc": "2.0",
+				"method": "eth_call",
+				"params": [{"from": "%s","to":"%s","data":"0x%s"},"%s"],
+				"id": 1
+			}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, common.Bytes2Hex(inputParams), blockStr)
+		} else {
+			var blobHash common.Hash
+			if len(blobHashes) > 0 {
+				blobHash = blobHashes[0]
+			}
+			log.Infof(`Use the next command to debug it manually.
+			curl --location --request POST 'http://localhost:8545' \
+			--header 'Content-Type: application/json' \
+			--data-raw '{
+				"jsonrpc": "2.0",
+				"method": "eth_call",
+				"params": [{"from": "%s","to":"%s","data":"0x%s", "blobVersionedHashes":["%s"]},"%s"],
+				"id": 1
+			}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, common.Bytes2Hex(inputParams), blobHash, blockStr)
+		}
+	}
+}
+
+// dumpCurlCallTx dumps log info to make the curl call from the command line
+func (etherMan *Client) dumpCurlCallTx(opts bind.TransactOpts, tx types.Transaction, dumpScreen bool, dumpFile bool) {
+	type ParamsItem struct {
+		From                string   `json:"from"`
+		To                  string   `json:"to"`
+		Data                string   `json:"data"`
+		BlobVersionedHashes []string `json:"blobVersionedHashes,omitempty"`
 	}
 
-	abiFeijoa, err := abi.JSON(strings.NewReader(polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.ABI))
-	if err != nil {
-		log.Errorf("error parsing JSON: %v", err)
-		return
+	type JsonRequest struct {
+		Jsonrpc string       `json:"jsonrpc"`
+		Method  string       `json:"method"`
+		Params  []ParamsItem `json:"params"`
+		Id      int          `json:"id"`
 	}
-	inputParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
-	if err != nil {
-		log.Errorf("error packing arguments: %v", err)
-		return
+
+	type SidecarData struct {
+		Commit string `json:"commitment"`
+		Proof  string `json:"proof"`
+		Blob   string `json:"blob"`
 	}
-	// abiFeijoa, err := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
-	// if err != nil {
-	// 	log.Errorf("error getting abi: %v", err)
-	// }
-	// input, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
-	// if err != nil {
-	// 	log.Errorf("error packing call: %v", err)
-	// }
-	ctx := context.Background()
-	block, err := etherMan.EthClient.BlockByNumber(ctx, nil)
-	var blockStr string
-	if err != nil {
-		log.Errorf("error getting blockNumber: %v", err)
-		blockStr = "latest"
-	} else {
-		blockStr = fmt.Sprintf("%x", block.Number())
+
+	var blobHash0 string
+	var commit0 string
+	var proofs0 string
+	var blob0 string
+	blobType := tx.Type() == BLOB_TX_TYPE
+	if blobType {
+		sidecar := tx.BlobTxSidecar()
+		if len(sidecar.Blobs) > 0 {
+			blobHash0 = common.Bytes2Hex(sidecar.BlobHashes()[0][:])
+			commit0 = common.Bytes2Hex(sidecar.Commitments[0][:])
+			proofs0 = common.Bytes2Hex(sidecar.Proofs[0][:])
+			blob0 = common.Bytes2Hex(sidecar.Blobs[0][:])
+		}
 	}
-	log.Infof(`Use the next command to debug it manually.
-		curl --location --request POST 'http://localhost:8545' \
-		--header 'Content-Type: application/json' \
-		--data-raw '{
-			"jsonrpc": "2.0",
-			"method": "eth_call",
-			"params": [{"from": "%s","to":"%s","data":"0x%s"},"0x%s"], %d
-			"id": 1
-		}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, "" /*common.Bytes2Hex(inputParams),*/, blockStr, len(inputParams))
+
+	params := ParamsItem{
+		From: "0x" + common.Bytes2Hex(opts.From[:]),
+		To:   "0x" + common.Bytes2Hex(tx.To()[:]),
+		Data: "0x" + common.Bytes2Hex(tx.Data()),
+	}
+	var sidecarJson SidecarData
+	if blobType {
+		params.BlobVersionedHashes = append(params.BlobVersionedHashes, "0x"+blobHash0)
+
+		sidecarJson = SidecarData{
+			Commit: "0x" + commit0,
+			Proof:  "0x" + proofs0,
+			Blob:   "0x" + blob0,
+		}
+	}
+
+	request := JsonRequest{
+		Jsonrpc: "2.0",
+		Method:  "eth_call",
+		Params: []ParamsItem{
+			params,
+		},
+	}
+
+	// Generate dump files
+	if dumpFile {
+		now := time.Now()
+		fileName := fmt.Sprintf("type%d-%d-%02d-%02d_%02d-%02d-%02d-%03d", tx.Type(),
+			now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond()/1e6) //nolint:gomnd
+
+		file, err := os.Create("dump-" + fileName + ".json")
+		if err == nil {
+			defer file.Close()
+			encoder := json.NewEncoder(file)
+			_ = encoder.Encode(request)
+		}
+
+		if blobType {
+			file2, err := os.Create("dums-" + fileName + ".json")
+			if err == nil {
+				defer file2.Close()
+				encoder := json.NewEncoder(file2)
+				_ = encoder.Encode(sidecarJson)
+			}
+		}
+	}
+
+	// Generate log info
+	if dumpScreen {
+		log.Infof(`
+			type: %d
+			nonce: %d
+			from: %v
+			to: %v
+			value: %v
+			sidecarHashes0: %v
+			sidecarCommit0: %v
+			sidecarProofs0: %v
+		`, tx.Type(), tx.Nonce(), opts.From, tx.To(), tx.Value(), blobHash0, commit0, proofs0)
+	}
 }
 
 // encodeBlobData encodes data to be sent as a blob via an Ethereum blob transaction

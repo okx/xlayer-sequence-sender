@@ -1,8 +1,8 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/0xPolygonHermez/zkevm-data-streamer v0.2.0 h1:W4s0ICVQ2477quI0trjvPTae3kNgkPXINyG4NOBR6VQ=
 github.com/0xPolygonHermez/zkevm-data-streamer v0.2.0/go.mod h1:0QkAXcFa92mFJrCbN3UPUJGJYes851yEgYHLONnaosE=
-github.com/0xPolygonHermez/zkevm-ethtx-manager v0.1.0 h1:tDw3+a8j4NDWke/nUT6pVWjnDfF+ONzUJCE+As6PSD4=
-github.com/0xPolygonHermez/zkevm-ethtx-manager v0.1.0/go.mod h1:GbITwHh15LH9AGLmash06/pM1I1Kaf/XwB8O7J4s1WI=
+github.com/0xPolygonHermez/zkevm-ethtx-manager v0.1.3 h1:OphoV4oozIU2hIM+B/zrSXCrT4Atq0anvo5qHC0MgF8=
+github.com/0xPolygonHermez/zkevm-ethtx-manager v0.1.3/go.mod h1:GbITwHh15LH9AGLmash06/pM1I1Kaf/XwB8O7J4s1WI=
 github.com/0xPolygonHermez/zkevm-node v0.5.0 h1:qoqBQ5dBUcJqH98/+iZpZXwpIg73AnVs4EsGikxAj7o=
 github.com/0xPolygonHermez/zkevm-node v0.5.0/go.mod h1:ODnoTsv5wai6GdXKEQV4eo/GAvwtk9TBnhbeD5TvnXE=
 github.com/AndreasBriese/bbloom v0.0.0-20190306092124-e2d15f34fcf9/go.mod h1:bOvUY6CB00SOBii9/FifXqc0awNKxLFCL/+pkDPuyl8=

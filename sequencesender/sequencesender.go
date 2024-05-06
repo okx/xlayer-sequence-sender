@@ -29,11 +29,6 @@ var (
 	ErrOversizedData = errors.New("oversized data")
 )
 
-const (
-	// BLOB_TX_TYPE is a blob transaction type
-	BLOB_TX_TYPE = byte(0x03)
-)
-
 // SequenceSender represents a sequence sender
 type SequenceSender struct {
 	cfg                 Config
@@ -547,7 +542,7 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 	}
 
 	// Add sequence tx
-	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData, sidecar)
+	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData, s.cfg.GasOffset, sidecar)
 	if err != nil {
 		log.Errorf("[SeqSender] error adding sequence to ethtxmanager: %v", err)
 		return err
@@ -647,7 +642,7 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 		// Check if can be send
 		tx, err := s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 		if err == nil {
-			useBlobs = tx.Type() == BLOB_TX_TYPE
+			useBlobs = tx.Type() == etherman.BLOB_TX_TYPE
 
 			if !useBlobs && tx.Size() > s.cfg.MaxTxSizeForL1 {
 				log.Infof("[SeqSender] oversized Data on TX oldHash %s (txSize %d > %d)", tx.Hash(), tx.Size(), s.cfg.MaxTxSizeForL1)
@@ -663,7 +658,7 @@ func (s *SequenceSender) getSequencesToSend() ([]ethmanTypes.Sequence, bool, err
 					// Handling the error gracefully, re-processing the sequence as a sanity check
 					tx, err = s.etherman.EstimateGasSequenceBatches(s.cfg.SenderAddress, sequences, s.cfg.L2Coinbase, oldAccInputHash)
 					if err == nil {
-						useBlobs = tx.Type() == BLOB_TX_TYPE
+						useBlobs = tx.Type() == etherman.BLOB_TX_TYPE
 					}
 					return sequences, useBlobs, err
 				}
