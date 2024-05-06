@@ -520,7 +520,7 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 	}
 
 	// Add sequence tx
-	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData, nil)
+	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData, s.cfg.GasOffset, nil)
 	if err != nil {
 		log.Errorf("[SeqSender] error adding sequence to ethtxmanager: %v", err)
 		return err
@@ -899,7 +899,7 @@ func (s *SequenceSender) addNewSequenceBatch(l2Block *datastream.L2Block) {
 // addInfoSequenceBatchStart adds info from the batch start
 func (s *SequenceSender) addInfoSequenceBatchStart(batch *datastream.BatchStart) {
 	s.mutexSequence.Lock()
-	log.Infof("[SeqSender] batch %d Start: forkId %d chainId %d", batch.Number, batch.ForkId, batch.ChainId)
+	log.Infof("[SeqSender] batch %d (%s) Start: type %d forkId %d chainId %d", batch.Number, datastream.BatchType_name[int32(batch.Type)], batch.Type, batch.ForkId, batch.ChainId)
 
 	// Current batch
 	data := s.sequenceData[s.wipBatch]
