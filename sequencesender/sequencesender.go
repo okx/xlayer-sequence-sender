@@ -899,7 +899,7 @@ func (s *SequenceSender) addNewSequenceBatch(l2Block *datastream.L2Block) {
 // addInfoSequenceBatchStart adds info from the batch start
 func (s *SequenceSender) addInfoSequenceBatchStart(batch *datastream.BatchStart) {
 	s.mutexSequence.Lock()
-	log.Infof("[SeqSender] batch %d (type %d) Start: forkId %d chainId %d", batch.Number, batch.Type, batch.ForkId, batch.ChainId)
+	log.Infof("[SeqSender] batch %d (%s) Start: type %d forkId %d chainId %d", batch.Number, datastream.BatchType_name[int32(batch.Type)], batch.Type, batch.ForkId, batch.ChainId)
 
 	// Current batch
 	data := s.sequenceData[s.wipBatch]
