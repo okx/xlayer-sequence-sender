@@ -33,6 +33,9 @@ import (
 const (
 	// BLOB_TX_TYPE is a blob transaction type
 	BLOB_TX_TYPE = byte(0x03)
+
+	generateDumpFiles  = false
+	generateDumpScreen = false
 )
 
 var (
@@ -312,7 +315,7 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 
 	// SC call
 	tx, err := etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, newAccInputHash)
-	etherMan.dumpCurlCallTx(opts, *tx, false, true)
+	etherMan.dumpCurlCallTx(opts, *tx, generateDumpScreen, generateDumpFiles)
 	if err != nil {
 		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash, []common.Hash{}, false)
 		if parsedErr, ok := tryParseError(err); ok {
@@ -431,7 +434,7 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	})
 
 	signedTx, err := opts.Signer(opts.From, blobTx)
-	etherMan.dumpCurlCallTx(opts, *blobTx, false, true)
+	etherMan.dumpCurlCallTx(opts, *blobTx, generateDumpScreen, generateDumpFiles)
 	if err != nil {
 		// etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash, blobHashes, false)
 		return nil, common.Hash{}, err
@@ -520,48 +523,51 @@ func (etherMan *Client) LastAccInputHash() (common.Hash, error) {
 // dumpCurlCall dumps log info to make the curl call from the command line
 func (etherMan *Client) dumpCurlCall(opts *bind.TransactOpts, l2Coinbase common.Address, seqBlobData *sequenceBlobData,
 	blobData *[]polygonzkevmfeijoa.PolygonRollupBaseFeijoaBlobData, accInputHash common.Hash, blobHashes []common.Hash, dumpScreen bool) {
-	if dumpScreen {
-		// Log info
-		log.Infof("l2CoinBase: %v", l2Coinbase)
-		log.Infof("sequencer: %v", opts.From)
-		log.Infof("accInputHash: %v", accInputHash)
-		log.Infof("seq.maxSequenceTimestamp: %v", seqBlobData.maxSequenceTimestamp)
-		log.Infof("seq.zkGasLimit: %v", seqBlobData.zkGasLimit)
-		log.Infof("seq.l1InfoLeafIndex: %v", seqBlobData.l1InfoLeafIndex)
-		var isBlobTx bool
-		if len(*blobData) > 0 {
-			isBlobTx = (*blobData)[0].BlobType == blobTypeBlobTx
-			log.Infof("BlobType: %v", (*blobData)[0].BlobType)
-			log.Infof("BlobTypeParams (length %d)", len((*blobData)[0].BlobTypeParams))
-		} else {
-			isBlobTx = false
-			log.Infof("Empty blobData!")
-		}
+	if !dumpScreen {
+		return
+	}
 
-		abiFeijoa, err := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
-		if err != nil {
-			log.Errorf("error parsing JSON: %v", err)
-			return
-		}
-		inputParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
-		if err != nil {
-			log.Errorf("error packing arguments: %v", err)
-			return
-		}
-		log.Infof("inputData (length %d)", len(inputParams))
+	// Log info
+	log.Infof("l2CoinBase: %v", l2Coinbase)
+	log.Infof("sequencer: %v", opts.From)
+	log.Infof("accInputHash: %v", accInputHash)
+	log.Infof("seq.maxSequenceTimestamp: %v", seqBlobData.maxSequenceTimestamp)
+	log.Infof("seq.zkGasLimit: %v", seqBlobData.zkGasLimit)
+	log.Infof("seq.l1InfoLeafIndex: %v", seqBlobData.l1InfoLeafIndex)
+	var isBlobTx bool
+	if len(*blobData) > 0 {
+		isBlobTx = (*blobData)[0].BlobType == blobTypeBlobTx
+		log.Infof("BlobType: %v", (*blobData)[0].BlobType)
+		log.Infof("BlobTypeParams (length %d)", len((*blobData)[0].BlobTypeParams))
+	} else {
+		isBlobTx = false
+		log.Infof("Empty blobData!")
+	}
 
-		ctx := context.Background()
-		block, err := etherMan.EthClient.BlockByNumber(ctx, nil)
-		var blockStr string
-		if err != nil {
-			log.Errorf("error getting blockNumber: %v", err)
-			blockStr = "latest"
-		} else {
-			blockStr = fmt.Sprintf("0x%x", block.Number())
-		}
+	abiFeijoa, err := polygonzkevmfeijoa.PolygonzkevmfeijoaMetaData.GetAbi()
+	if err != nil {
+		log.Errorf("error parsing JSON: %v", err)
+		return
+	}
+	inputParams, err := abiFeijoa.Pack("sequenceBlobs", blobData, l2Coinbase, accInputHash)
+	if err != nil {
+		log.Errorf("error packing arguments: %v", err)
+		return
+	}
+	log.Infof("inputData (length %d)", len(inputParams))
 
-		if !isBlobTx {
-			log.Infof(`Use the next command to debug it manually.
+	ctx := context.Background()
+	block, err := etherMan.EthClient.BlockByNumber(ctx, nil)
+	var blockStr string
+	if err != nil {
+		log.Errorf("error getting blockNumber: %v", err)
+		blockStr = "latest"
+	} else {
+		blockStr = fmt.Sprintf("0x%x", block.Number())
+	}
+
+	if !isBlobTx {
+		log.Infof(`Use the next command to debug it manually.
 			curl --location --request POST 'http://localhost:8545' \
 			--header 'Content-Type: application/json' \
 			--data-raw '{
@@ -570,12 +576,12 @@ func (etherMan *Client) dumpCurlCall(opts *bind.TransactOpts, l2Coinbase common.
 				"params": [{"from": "%s","to":"%s","data":"0x%s"},"%s"],
 				"id": 1
 			}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, common.Bytes2Hex(inputParams), blockStr)
-		} else {
-			var blobHash common.Hash
-			if len(blobHashes) > 0 {
-				blobHash = blobHashes[0]
-			}
-			log.Infof(`Use the next command to debug it manually.
+	} else {
+		var blobHash common.Hash
+		if len(blobHashes) > 0 {
+			blobHash = blobHashes[0]
+		}
+		log.Infof(`Use the next command to debug it manually.
 			curl --location --request POST 'http://localhost:8545' \
 			--header 'Content-Type: application/json' \
 			--data-raw '{
@@ -584,12 +590,15 @@ func (etherMan *Client) dumpCurlCall(opts *bind.TransactOpts, l2Coinbase common.
 				"params": [{"from": "%s","to":"%s","data":"0x%s", "blobVersionedHashes":["%s"]},"%s"],
 				"id": 1
 			}'`, opts.From, etherMan.l1Cfg.ZkEVMAddr, common.Bytes2Hex(inputParams), blobHash, blockStr)
-		}
 	}
 }
 
 // dumpCurlCallTx dumps log info to make the curl call from the command line
 func (etherMan *Client) dumpCurlCallTx(opts bind.TransactOpts, tx types.Transaction, dumpScreen bool, dumpFile bool) {
+	if !dumpScreen && !dumpFile {
+		return
+	}
+
 	type ParamsItem struct {
 		From                string   `json:"from"`
 		To                  string   `json:"to"`

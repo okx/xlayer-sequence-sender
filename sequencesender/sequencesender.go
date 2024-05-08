@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +83,7 @@ type ethTxAdditionalData struct {
 // New inits sequence sender
 func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 	// Create sequencesender
+	printMem("bef New")
 	s := SequenceSender{
 		cfg:               cfg,
 		etherman:          etherman,
@@ -94,6 +96,7 @@ func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 	}
 
 	// Restore pending sent sequences
+	printMem("aft New bef loadSeq")
 	err := s.loadSentSequencesTransactions()
 	if err != nil {
 		log.Fatalf("[SeqSender] error restoring sent sequences from file: %v", err)
@@ -101,6 +104,7 @@ func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 	}
 
 	// Create local synchronizer
+	printMem("aft loadSeq bef NewSync")
 	s.synchronizer, err = NewSynchronizer("sync.json")
 	if err != nil {
 		log.Fatalf("[SeqSender] error creating local synchronizer: %v", err)
@@ -112,6 +116,7 @@ func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 		Level:       cfg.Log.Level,
 		Outputs:     cfg.Log.Outputs,
 	}
+	printMem("bef ethtxman New")
 	s.ethTxManager, err = ethtxmanager.New(cfg.EthTxManager)
 	if err != nil {
 		log.Fatalf("[SeqSender] error creating ethtxmanager client: %v", err)
@@ -119,12 +124,14 @@ func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 	}
 
 	// Create datastream client
+	printMem("aft ethtxman New bef ds NewClient")
 	s.streamClient, err = datastreamer.NewClient(s.cfg.StreamClient.Server, 1)
 	if err != nil {
 		log.Fatalf("[SeqSender] failed to create stream client, error: %v", err)
 	} else {
 		log.Infof("[SeqSender] new stream client")
 	}
+	printMem("aft ds NewClient")
 	// Set func to handle the streaming
 	s.streamClient.SetProcessEntryFunc(s.handleReceivedDataStream)
 
@@ -134,7 +141,9 @@ func New(cfg Config, etherman ethermaner) (*SequenceSender, error) {
 // Start starts the sequence sender
 func (s *SequenceSender) Start(ctx context.Context) {
 	// Start ethtxmanager client
+	printMem("bef ethtxman Start")
 	go s.ethTxManager.Start()
+	printMem("aft ethtxman Start")
 
 	// Get current nonce
 	var err error
@@ -194,7 +203,9 @@ func (s *SequenceSender) Start(ctx context.Context) {
 // sequenceSending starts loop to check if there are sequences to send and sends them if it's convenient
 func (s *SequenceSender) sequenceSending(ctx context.Context) {
 	for {
+		printMem("bef tryToSendSequence")
 		s.tryToSendSequence(ctx)
+		printMem("aft tryToSendSequence")
 		time.Sleep(s.cfg.WaitPeriodSendSequence.Duration)
 	}
 }
@@ -1112,4 +1123,11 @@ func (s *SequenceSender) getLatestAccInputHash() (common.Hash, error) {
 	}
 
 	return accInputHashSync, nil
+}
+
+func printMem(msg string) {
+	const MB = 1024 * 1024
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	log.Infof("[mem] %s: %d MB used | %d MB allocated", msg, mem.Sys/MB, mem.Alloc/MB)
 }
