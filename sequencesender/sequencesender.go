@@ -42,7 +42,6 @@ type SequenceSender struct {
 	sequenceData        map[uint64]*sequenceData   // All the batch data indexed by batch number
 	mutexSequence       sync.Mutex                 // Mutex to access sequenceData and sequenceList
 	ethTransactions     map[common.Hash]*ethTxData // All the eth tx sent to L1 indexed by hash
-	ethTxData           map[common.Hash][]byte     // Tx data send to or received from L1
 	mutexEthTx          sync.Mutex                 // Mutex to access ethTransactions
 	sequencesTxFile     *os.File                   // Persistence of sent transactions
 	validStream         bool                       // Not valid while receiving data before the desired batch
@@ -70,6 +69,7 @@ type ethTxData struct {
 	To              common.Address                      `json:"to"`
 	StateHistory    []string                            `json:"stateHistory"`
 	Txs             map[common.Hash]ethTxAdditionalData `json:"txs"`
+	Data            []byte                              `json:"data"`
 }
 
 type ethTxAdditionalData struct {
@@ -84,7 +84,6 @@ func New(cfg Config, etherman *etherman.Client) (*SequenceSender, error) {
 		cfg:               cfg,
 		etherman:          etherman,
 		ethTransactions:   make(map[common.Hash]*ethTxData),
-		ethTxData:         make(map[common.Hash][]byte),
 		sequenceData:      make(map[uint64]*sequenceData),
 		validStream:       false,
 		latestStreamBatch: 0,
@@ -129,12 +128,9 @@ func (s *SequenceSender) Start(ctx context.Context) {
 	go s.ethTxManager.Start()
 
 	// Get current nonce
-	var err error
-	s.currentNonce, err = s.etherman.CurrentNonce(ctx, s.cfg.L2Coinbase)
+	err := s.updateCurrentNonce(ctx)
 	if err != nil {
-		log.Fatalf("[SeqSender] failed to get current nonce from %v, error: %v", s.cfg.L2Coinbase, err)
-	} else {
-		log.Infof("[SeqSender] current nonce for %v is %d", s.cfg.L2Coinbase, s.currentNonce)
+		log.Fatalf("[SeqSender] failed to get initial current nonce from %v", s.cfg.L2Coinbase)
 	}
 
 	// Get latest virtual state batch from L1
@@ -263,7 +259,6 @@ func (s *SequenceSender) purgeEthTx(ctx context.Context) {
 				lastPurged = s.ethTransactions[toPurge[i]].Nonce
 			}
 			delete(s.ethTransactions, toPurge[i])
-			delete(s.ethTxData, toPurge[i])
 		}
 		log.Infof("[SeqSender] txs purged count: %d, fromNonce: %d, toNonce: %d", len(toPurge), firstPurged, lastPurged)
 	}
@@ -345,8 +340,8 @@ func (s *SequenceSender) syncAllEthTxResults(ctx context.Context) error {
 
 // copyTxData copies tx data in the internal structure
 func (s *SequenceSender) copyTxData(txHash common.Hash, txData []byte, txsResults map[common.Hash]ethtxmanager.TxResult) {
-	s.ethTxData[txHash] = make([]byte, len(txData))
-	copy(s.ethTxData[txHash], txData)
+	s.ethTransactions[txHash].Data = make([]byte, len(txData))
+	copy(s.ethTransactions[txHash].Data, txData)
 
 	s.ethTransactions[txHash].Txs = make(map[common.Hash]ethTxAdditionalData, 0)
 	for hash, result := range txsResults {
@@ -402,10 +397,12 @@ func (s *SequenceSender) getResultAndUpdateEthTx(ctx context.Context, txHash com
 
 	txResult, err := s.ethTxManager.Result(ctx, txHash)
 	if err == ethtxmanager.ErrNotFound {
-		log.Infof("[SeqSender] transaction %v does not exist in ethtxmanager. Marking it", txHash)
-		txData.OnMonitor = false
-		// Resend tx?
-		// _ = s.sendTx(ctx, true, &txHash, nil, 0, 0, nil)
+		log.Infof("[SeqSender] transaction %v does not exist in ethtxmanager", txHash)
+		// Resend tx
+		// errSend := s.sendTx(ctx, true, &txHash, nil, 0, 0, nil)
+		// if errSend == nil {
+		// 	txData.OnMonitor = false
+		// }
 	} else if err != nil {
 		log.Errorf("[SeqSender] error getting result for tx %v: %v", txHash, err)
 		return err
@@ -454,10 +451,54 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 		return
 	}
 
-	// Send sequences to L1
+	// Sequence
 	sequenceCount := len(sequences)
 	firstSequence := sequences[0]
 	lastSequence := sequences[sequenceCount-1]
+	lastL2BlockTimestamp := uint64(lastSequence.LastL2BLockTimestamp)
+
+	// Wait until last L1 block timestamp is L1BlockTimestampMargin seconds above the timestamp of the last L2 block in the sequence
+	timeMargin := int64(s.cfg.L1BlockTimestampMargin.Seconds())
+	for {
+		// Get header of the last L1 block
+		lastL1BlockHeader, err := s.etherman.GetLatestBlockHeader(ctx)
+		if err != nil {
+			log.Errorf("[SeqSender] failed to get last L1 block timestamp, err: %v", err)
+			return
+		}
+
+		elapsed, waitTime := s.marginTimeElapsed(lastL2BlockTimestamp, lastL1BlockHeader.Time, timeMargin)
+
+		if !elapsed {
+			log.Infof("[SeqSender] waiting at least %d seconds to send sequences, time difference between last L1 block %d (ts: %d) and last L2 block %d (ts: %d) in the sequence is lower than %d seconds",
+				waitTime, lastL1BlockHeader.Number, lastL1BlockHeader.Time, lastSequence.BatchNumber, lastL2BlockTimestamp, timeMargin)
+			time.Sleep(time.Duration(waitTime) * time.Second)
+		} else {
+			log.Infof("[SeqSender] continuing, time difference between last L1 block %d (ts: %d) and last L2 block %d (ts: %d) in the sequence is greater than %d seconds",
+				lastL1BlockHeader.Number, lastL1BlockHeader.Time, lastSequence.BatchNumber, lastL2BlockTimestamp, timeMargin)
+			break
+		}
+	}
+
+	// Sanity check: Wait also until current time is L1BlockTimestampMargin seconds above the timestamp of the last L2 block in the sequence
+	for {
+		currentTime := uint64(time.Now().Unix())
+
+		elapsed, waitTime := s.marginTimeElapsed(lastL2BlockTimestamp, currentTime, timeMargin)
+
+		// Wait if the time difference is less than L1BlockTimestampMargin
+		if !elapsed {
+			log.Infof("[SeqSender] waiting at least %d seconds to send sequences, time difference between now (ts: %d) and last L2 block %d (ts: %d) in the sequence is lower than %d seconds",
+				waitTime, currentTime, lastSequence.BatchNumber, lastL2BlockTimestamp, timeMargin)
+			time.Sleep(time.Duration(waitTime) * time.Second)
+		} else {
+			log.Infof("[SeqSender]sending sequences now, time difference between now (ts: %d) and last L2 block %d (ts: %d) in the sequence is also greater than %d seconds",
+				currentTime, lastSequence.BatchNumber, lastL2BlockTimestamp, timeMargin)
+			break
+		}
+	}
+
+	// Send sequences to L1
 	log.Infof("[SeqSender] sending sequences to L1. From batch %d to batch %d", firstSequence.BatchNumber, lastSequence.BatchNumber)
 	printSequences(sequences)
 
@@ -501,7 +542,7 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 		}
 		paramTo = &s.ethTransactions[*txOldHash].To
 		paramNonce = &s.ethTransactions[*txOldHash].Nonce
-		paramData = s.ethTxData[*txOldHash]
+		paramData = s.ethTransactions[*txOldHash].Data
 		valueFromBatch = s.ethTransactions[*txOldHash].FromBatch
 		valueToBatch = s.ethTransactions[*txOldHash].ToBatch
 	}
@@ -510,7 +551,7 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 	}
 
 	// Add sequence tx
-	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData)
+	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData, s.cfg.GasOffset, nil)
 	if err != nil {
 		log.Errorf("[SeqSender] error adding sequence to ethtxmanager: %v", err)
 		return err
@@ -653,6 +694,19 @@ func (s *SequenceSender) handleEstimateGasSendSequenceErr(sequences []types.Sequ
 		sequences = nil
 	}
 	return sequences, nil
+}
+
+// updateCurrentNonce gets the current nonce from L1 and updates the field value
+func (s *SequenceSender) updateCurrentNonce(ctx context.Context) error {
+	// Get current nonce
+	nonce, err := s.etherman.CurrentNonce(ctx, s.cfg.L2Coinbase)
+	if err != nil {
+		log.Warnf("[SeqSender] failed to get current nonce from %v, error: %v", s.cfg.L2Coinbase, err)
+	} else {
+		s.currentNonce = nonce
+		log.Infof("[SeqSender] current nonce for %v is %d", s.cfg.L2Coinbase, s.currentNonce)
+	}
+	return err
 }
 
 // isDataForEthTxTooBig checks if tx oversize error
@@ -960,6 +1014,32 @@ func (s *SequenceSender) updateLatestVirtualBatch() error {
 		log.Infof("[SeqSender] latest virtual batch is %d", s.latestVirtualBatch)
 	}
 	return nil
+}
+
+// marginTimeElapsed checks if the time between currentTime and l2BlockTimestamp is greater than timeMargin.
+// If it's greater returns true, otherwise it returns false and the waitTime needed to achieve this timeMargin
+func (s *SequenceSender) marginTimeElapsed(l2BlockTimestamp uint64, currentTime uint64, timeMargin int64) (bool, int64) {
+	// Check the time difference between L2 block and currentTime
+	var timeDiff int64
+	if l2BlockTimestamp >= currentTime {
+		//L2 block timestamp is above currentTime, negative timeDiff. We do in this way to avoid uint64 overflow
+		timeDiff = int64(-(l2BlockTimestamp - currentTime))
+	} else {
+		timeDiff = int64(currentTime - l2BlockTimestamp)
+	}
+
+	// Check if the time difference is less than timeMargin (L1BlockTimestampMargin)
+	if timeDiff < timeMargin {
+		var waitTime int64
+		if timeDiff < 0 { //L2 block timestamp is above currentTime
+			waitTime = timeMargin + (-timeDiff)
+		} else {
+			waitTime = timeMargin - timeDiff
+		}
+		return false, waitTime
+	} else { // timeDiff is greater than timeMargin
+		return true, 0
+	}
 }
 
 // logFatalf logs error, activates flag to stop sequencing, and remains in an infinite loop
