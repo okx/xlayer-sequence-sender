@@ -184,7 +184,7 @@ func (etherMan *Client) EstimateGasSequenceBatches(sender common.Address, sequen
 	log.Infof("(%d-%d) >> tx BLOB cost: %9d Gwei = %d blobGas x %d blobGasPrice", firstSeq, lastSeq, estimateBlobCost/GWEI_DIV, blobTx.BlobGas(), blobTx.BlobGasFeeCap().Uint64())
 
 	// Return the cheapest one
-	if estimateBlobCost*10000000 < estimateDataCost {
+	if estimateBlobCost < estimateDataCost {
 		return blobTx, nil
 	} else {
 		return tx, nil
@@ -315,7 +315,9 @@ func (etherMan *Client) sequenceBatchesData(opts bind.TransactOpts, sequences []
 
 	// SC call
 	tx, err := etherMan.ZkEVM.SequenceBlobs(&opts, blobData, l2Coinbase, newAccInputHash)
-	etherMan.dumpCurlCallTx(opts, *tx, generateDumpScreen, generateDumpFiles)
+	if tx != nil {
+		etherMan.dumpCurlCallTx(opts, *tx, generateDumpScreen, generateDumpFiles)
+	}
 	if err != nil {
 		etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash, []common.Hash{}, false)
 		if parsedErr, ok := tryParseError(err); ok {
@@ -434,7 +436,9 @@ func (etherMan *Client) sequenceBatchesBlob(opts bind.TransactOpts, sequences []
 	})
 
 	signedTx, err := opts.Signer(opts.From, blobTx)
-	etherMan.dumpCurlCallTx(opts, *blobTx, generateDumpScreen, generateDumpFiles)
+	if blobTx != nil {
+		etherMan.dumpCurlCallTx(opts, *blobTx, generateDumpScreen, generateDumpFiles)
+	}
 	if err != nil {
 		// etherMan.dumpCurlCall(&opts, l2Coinbase, seqBlobData, &blobData, newAccInputHash, blobHashes, false)
 		return nil, common.Hash{}, err
@@ -664,7 +668,7 @@ func (etherMan *Client) dumpCurlCallTx(opts bind.TransactOpts, tx types.Transact
 		fileName := fmt.Sprintf("type%d-%d-%02d-%02d_%02d-%02d-%02d-%03d", tx.Type(),
 			now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond()/1e6) //nolint:gomnd
 
-		file, err := os.Create("dump-" + fileName + ".json")
+		file, err := os.Create("dump/dump-" + fileName + ".json")
 		if err == nil {
 			defer file.Close()
 			encoder := json.NewEncoder(file)
@@ -672,7 +676,7 @@ func (etherMan *Client) dumpCurlCallTx(opts bind.TransactOpts, tx types.Transact
 		}
 
 		if blobType {
-			file2, err := os.Create("dums-" + fileName + ".json")
+			file2, err := os.Create("dump/dums-" + fileName + ".json")
 			if err == nil {
 				defer file2.Close()
 				encoder := json.NewEncoder(file2)

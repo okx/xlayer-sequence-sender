@@ -32,3 +32,5 @@ ethtxmanager.json
 sync.json
 test/config/*
 test/*.keystore
+test/txdata.json
+test/txsidecar.json
