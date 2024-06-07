@@ -22,6 +22,10 @@ var (
 	ErrNoSigner = errors.New("no signer to authorize the transaction with")
 	// ErrMissingTrieNode means that a node is missing on the trie
 	ErrMissingTrieNode = errors.New("missing trie node")
+	// ErrNotFound is used when the object is not found
+	ErrNotFound = errors.New("not found")
+	// ErrPrivateKeyNotFound used when the provided sender does not have a private key registered to be used
+	ErrPrivateKeyNotFound = errors.New("can't find sender private key to sign tx")
 
 	errorsCache = map[string]error{
 		ErrGasRequiredExceedsAllowance.Error():             ErrGasRequiredExceedsAllowance,
