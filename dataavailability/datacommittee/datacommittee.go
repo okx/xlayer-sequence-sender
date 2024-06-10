@@ -82,7 +82,7 @@ func (d *Backend) Init() error {
 	if committee != nil {
 		d.committeeMembers = committee.Members
 		if len(committee.Members) > 0 {
-			selectedCommitteeMember = rand.Intn(len(committee.Members) - 1) //nolint:gosec
+			selectedCommitteeMember = rand.Intn(len(committee.Members)) //nolint:gosec
 		}
 	}
 	d.selectedCommitteeMember = selectedCommitteeMember
