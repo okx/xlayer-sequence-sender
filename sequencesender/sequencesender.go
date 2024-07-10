@@ -820,6 +820,7 @@ func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *
 	case datastream.EntryType_ENTRY_TYPE_L2_BLOCK:
 		// Handle stream entry: L2Block
 		l2Block := &datastream.L2Block{}
+
 		err := proto.Unmarshal(e.Data, l2Block)
 		if err != nil {
 			log.Errorf("[SeqSender] error unmarshalling L2Block: %v", err)
@@ -835,26 +836,18 @@ func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *
 			// Initial case after startup
 			s.addNewSequenceBatch(l2Block)
 			s.validStream = true
+		} else {
+			// Handle whether it's only a new block or also a new batch
+			if l2Block.BatchNumber > s.wipBatch {
+				// Create new sequential batch
+				s.addNewSequenceBatch(l2Block)
+			}
 		}
 
 		// Latest stream batch
 		s.latestStreamBatch = l2Block.BatchNumber
 		if !s.validStream {
 			return nil
-		}
-
-		// Handle whether it's only a new block or also a new batch
-		if l2Block.BatchNumber > s.wipBatch {
-			// New batch in the sequence
-			// Close current batch
-			err := s.closeSequenceBatch()
-			if err != nil {
-				log.Fatalf("[SeqSender] error closing wip batch")
-				return err
-			}
-
-			// Create new sequential batch
-			s.addNewSequenceBatch(l2Block)
 		}
 
 		// Add L2 block
@@ -907,6 +900,13 @@ func (s *SequenceSender) handleReceivedDataStream(e *datastreamer.FileEntry, c *
 
 		// Add batch end data
 		s.addInfoSequenceBatchEnd(batch)
+
+		// Close current batch
+		err = s.closeSequenceBatch()
+		if err != nil {
+			log.Fatalf("[SeqSender] error closing wip batch")
+			return err
+		}
 	}
 
 	return nil
