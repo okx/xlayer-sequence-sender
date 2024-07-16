@@ -73,6 +73,7 @@ type ethTxData struct {
 	To              common.Address                      `json:"to"`
 	StateHistory    []string                            `json:"stateHistory"`
 	Txs             map[common.Hash]ethTxAdditionalData `json:"txs"`
+	Gas             uint64                              `json:"gas"`
 }
 
 type ethTxAdditionalData struct {
@@ -418,7 +419,7 @@ func (s *SequenceSender) getResultAndUpdateEthTx(ctx context.Context, txHash com
 		log.Infof("transaction %v does not exist in ethtxmanager. Marking it", txHash)
 		txData.OnMonitor = false
 		// Resend tx
-		errSend := s.sendTx(ctx, true, &txHash, nil, 0, 0, nil)
+		errSend := s.sendTx(ctx, true, &txHash, nil, 0, 0, nil, 0)
 		if errSend == nil {
 			txData.OnMonitor = false
 		}
@@ -534,21 +535,32 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 		}
 	}
 
-	lastSequencedBatchNumber, err := s.etherman.GetLatestBatchNumber()
-	if err != nil {
-		log.Errorf("error getting latest sequenced batch, error: %v", err)
-		return
-	}
-
 	// Build sequence data
-	tx, err := s.etherman.BuildSequenceBatchesTx(s.cfg.SenderAddress, sequences, lastSequence.LastL2BLockTimestamp, lastSequencedBatchNumber, s.cfg.L2Coinbase, dataAvailabilityMessage)
+	tx, err := s.etherman.BuildSequenceBatchesTx(s.cfg.SenderAddress, sequences, lastSequence.LastL2BLockTimestamp, firstSequence.BatchNumber-1, s.cfg.L2Coinbase, dataAvailabilityMessage)
 	if err != nil {
 		log.Errorf("error estimating new sequenceBatches to add to ethtxmanager: ", err)
 		return
 	}
 
+	// Estimate gas: use last sequenced batch number instead of the expected one so the gas estimation doesn't fail
+	lastSequencedBatchNumber, err := s.etherman.GetLatestBatchNumber()
+	if err != nil {
+		log.Errorf("error getting latest sequenced batch, error: %v", err)
+		return
+	}
+	txToEstimateGas, err := s.etherman.BuildSequenceBatchesTx(s.cfg.SenderAddress, sequences, lastSequence.LastL2BLockTimestamp, lastSequencedBatchNumber, s.cfg.L2Coinbase, dataAvailabilityMessage)
+	if err != nil {
+		log.Errorf("error estimating new sequenceBatches to add to ethtxmanager: ", err)
+		return
+	}
+	gas, err := s.etherman.EstimateGas(ctx, s.cfg.SenderAddress, tx.To(), nil, txToEstimateGas.Data())
+	if err != nil {
+		log.Errorf("error estimating gas: ", err)
+		return
+	}
+
 	// Add sequence tx
-	err = s.sendTx(ctx, false, nil, tx.To(), firstSequence.BatchNumber, lastSequence.BatchNumber, tx.Data())
+	err = s.sendTx(ctx, false, nil, tx.To(), firstSequence.BatchNumber, lastSequence.BatchNumber, tx.Data(), gas)
 	if err != nil {
 		return
 	}
@@ -558,7 +570,7 @@ func (s *SequenceSender) tryToSendSequence(ctx context.Context) {
 }
 
 // sendTx adds transaction to the ethTxManager to send it to L1
-func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *common.Hash, to *common.Address, fromBatch uint64, toBatch uint64, data []byte) error {
+func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *common.Hash, to *common.Address, fromBatch uint64, toBatch uint64, data []byte, gas uint64) error {
 	// Params if new tx to send or resend a previous tx
 	var paramTo *common.Address
 	var paramNonce *uint64
@@ -583,13 +595,14 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 		paramData = s.ethTxData[*txOldHash]
 		valueFromBatch = s.ethTransactions[*txOldHash].FromBatch
 		valueToBatch = s.ethTransactions[*txOldHash].ToBatch
+		gas = s.ethTransactions[*txOldHash].Gas
 	}
 	if paramTo != nil {
 		valueToAddress = *paramTo
 	}
 
 	// Add sequence tx
-	txHash, err := s.ethTxManager.Add(ctx, paramTo, paramNonce, big.NewInt(0), paramData, s.cfg.GasOffset, nil)
+	txHash, err := s.ethTxManager.AddWithGas(ctx, paramTo, paramNonce, big.NewInt(0), paramData, s.cfg.GasOffset, nil, gas)
 	if err != nil {
 		log.Errorf("error adding sequence to ethtxmanager: %v", err)
 		return err
@@ -607,6 +620,7 @@ func (s *SequenceSender) sendTx(ctx context.Context, resend bool, txOldHash *com
 		ToBatch:         valueToBatch,
 		OnMonitor:       true,
 		To:              valueToAddress,
+		Gas:             gas,
 	}
 
 	// Add tx to internal structure

@@ -750,7 +750,7 @@ func (etherMan *Client) BuildSequenceBatchesTx(sender common.Address, sequences 
 
 func (etherMan *Client) sequenceBatches(opts bind.TransactOpts, sequences []ethmanTypes.Sequence, maxSequenceTimestamp uint64, lastSequencedBatchNumber uint64, l2Coinbase common.Address, dataAvailabilityMessage []byte) (tx *types.Transaction, err error) {
 	if etherMan.cfg.IsValidiumMode {
-		return etherMan.sequenceBatchesValidium(opts, sequences, maxSequenceTimestamp, sequences[0].BatchNumber-1, l2Coinbase, dataAvailabilityMessage)
+		return etherMan.sequenceBatchesValidium(opts, sequences, maxSequenceTimestamp, lastSequencedBatchNumber, l2Coinbase, dataAvailabilityMessage)
 	}
 
 	return etherMan.sequenceBatchesRollup(opts, sequences, maxSequenceTimestamp, lastSequencedBatchNumber, l2Coinbase)
