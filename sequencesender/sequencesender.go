@@ -1056,7 +1056,7 @@ func (s *SequenceSender) addNewBlockTx(l2Tx *datastream.Transaction) {
 	// New Tx raw
 	tx, err := state.DecodeTx(common.Bytes2Hex(l2Tx.Encoded))
 	if err != nil {
-		log.Fatalf("[SeqSender] error decoding tx!")
+		log.Fatalf("[SeqSender] error decoding tx! %v", err)
 		return
 	}
 
