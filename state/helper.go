@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -173,8 +174,11 @@ func DecodeTx(encodedTx string) (*types.Transaction, error) {
 		return nil, err
 	}
 
+	reader := bytes.NewReader(b)
+	stream := rlp.NewStream(reader, 0)
+
 	tx := new(types.Transaction)
-	if err := tx.UnmarshalBinary(b); err != nil {
+	if err := tx.DecodeRLP(stream); err != nil {
 		return nil, err
 	}
 	return tx, nil
