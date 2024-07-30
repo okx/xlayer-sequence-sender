@@ -24,7 +24,7 @@ require (
 )
 
 require (
-	github.com/0xPolygonHermez/zkevm-synchronizer-l1 v0.5.3 // indirect
+	github.com/0xPolygonHermez/zkevm-synchronizer-l1 v0.5.4 // indirect
 	github.com/DataDog/zstd v1.5.2 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
@@ -131,3 +131,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
+
+replace github.com/0xPolygonHermez/zkevm-ethtx-manager => github.com/okx/xlayer-ethtx-manager v0.0.1
