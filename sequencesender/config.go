@@ -66,6 +66,9 @@ type Config struct {
 
 	// MaxBatchesForL1 is the maximum amount of batches to be sequenced in a single L1 tx
 	MaxBatchesForL1 uint64 `mapstructure:"MaxBatchesForL1"`
+
+	// For X Layer
+	DAPermitApiPrivateKey types.KeystoreFileConfig `mapstructure:"DAPermitApiPrivateKey"`
 }
 
 // StreamClientCfg contains the data streamer's configuration properties

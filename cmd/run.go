@@ -98,7 +98,17 @@ func newDataAvailability(c config.Config, etherman *etherman.Client) (*dataavail
 			pk  *ecdsa.PrivateKey
 			err error
 		)
-		_, pk, err = etherman.LoadAuthFromKeyStore(c.SequenceSender.PrivateKey.Path, c.SequenceSender.PrivateKey.Password)
+
+		// For X Layer
+		path := c.SequenceSender.PrivateKey.Path
+		password := c.SequenceSender.PrivateKey.Password
+		if c.SequenceSender.DAPermitApiPrivateKey.Path != "" && c.SequenceSender.DAPermitApiPrivateKey.Password != "" {
+			log.Infof("Using DA permit API private key for data availability backend")
+			path = c.SequenceSender.DAPermitApiPrivateKey.Path
+			password = c.SequenceSender.DAPermitApiPrivateKey.Password
+		}
+
+		_, pk, err = etherman.LoadAuthFromKeyStore(path, password)
 		if err != nil {
 			return nil, err
 		}
