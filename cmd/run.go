@@ -65,7 +65,7 @@ func createSequenceSender(cfg config.Config) *sequencesender.SequenceSender {
 
 	// For X Layer DA permit api private key
 	auth, _, err := ethman.LoadAuthFromKeyStore(cfg.SequenceSender.DAPermitApiPrivateKey.Path, cfg.SequenceSender.DAPermitApiPrivateKey.Password)
-	if err != nil || auth == nil {
+	if err != nil {
 		log.Fatal(err)
 	}
 	if cfg.SequenceSender.SenderAddress.Cmp(common.Address{}) == 0 {
