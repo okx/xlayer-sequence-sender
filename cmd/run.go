@@ -18,6 +18,7 @@ import (
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/etherman"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/log"
 	"github.com/0xPolygonHermez/zkevm-sequence-sender/sequencesender"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/urfave/cli/v2"
 )
 
@@ -62,11 +63,15 @@ func createSequenceSender(cfg config.Config) *sequencesender.SequenceSender {
 		log.Fatal(err)
 	}
 
-	auth, _, err := ethman.LoadAuthFromKeyStore(cfg.SequenceSender.PrivateKey.Path, cfg.SequenceSender.PrivateKey.Password)
-	if err != nil {
+	// For X Layer DA permit api private key
+	auth, _, err := ethman.LoadAuthFromKeyStore(cfg.SequenceSender.DAPermitApiPrivateKey.Path, cfg.SequenceSender.DAPermitApiPrivateKey.Password)
+	if err != nil || auth == nil {
 		log.Fatal(err)
 	}
-	cfg.SequenceSender.SenderAddress = auth.From
+	if cfg.SequenceSender.SenderAddress.Cmp(common.Address{}) == 0 {
+		log.Fatal("Sequence sender address not configured")
+	}
+	log.Infof("DA pk: %s, config sender: %s", auth.From.String(), cfg.SequenceSender.SenderAddress.String())
 
 	da, err := newDataAvailability(cfg, ethman)
 	if err != nil {
@@ -100,15 +105,7 @@ func newDataAvailability(c config.Config, etherman *etherman.Client) (*dataavail
 		)
 
 		// For X Layer
-		path := c.SequenceSender.PrivateKey.Path
-		password := c.SequenceSender.PrivateKey.Password
-		if c.SequenceSender.DAPermitApiPrivateKey.Path != "" && c.SequenceSender.DAPermitApiPrivateKey.Password != "" {
-			log.Infof("Using DA permit API private key for data availability backend")
-			path = c.SequenceSender.DAPermitApiPrivateKey.Path
-			password = c.SequenceSender.DAPermitApiPrivateKey.Password
-		}
-
-		_, pk, err = etherman.LoadAuthFromKeyStore(path, password)
+		_, pk, err = etherman.LoadAuthFromKeyStore(c.SequenceSender.DAPermitApiPrivateKey.Path, c.SequenceSender.DAPermitApiPrivateKey.Password)
 		if err != nil {
 			return nil, err
 		}
