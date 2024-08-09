@@ -108,7 +108,7 @@ func New(cfg Config, etherman *etherman.Client, da *dataavailability.DataAvailab
 		Level:       cfg.Log.Level,
 		Outputs:     cfg.Log.Outputs,
 	}
-	s.ethTxManager, err = ethtxmanager.New(cfg.EthTxManager)
+	s.ethTxManager, err = ethtxmanager.New(cfg.EthTxManager, cfg.SenderAddress)
 	if err != nil {
 		log.Fatalf("[SeqSender] error creating ethtxmanager client: %v", err)
 		return nil, err

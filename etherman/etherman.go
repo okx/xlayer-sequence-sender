@@ -733,7 +733,7 @@ func (etherMan *Client) WaitTxToBeMined(ctx context.Context, tx *types.Transacti
 
 // BuildSequenceBatchesTx builds a tx to be sent to the PoE SC method SequenceBatches.
 func (etherMan *Client) BuildSequenceBatchesTx(sender common.Address, sequences []ethmanTypes.Sequence, maxSequenceTimestamp uint64, lastSequencedBatchNumber uint64, l2Coinbase common.Address, dataAvailabilityMessage []byte) (*types.Transaction, error) {
-	opts, err := etherMan.getAuthByAddress(sender)
+	opts, err := etherMan.generateRandomAuth()
 	if err == ErrNotFound {
 		return nil, fmt.Errorf("failed to build sequence batches, err: %w", ErrPrivateKeyNotFound)
 	}

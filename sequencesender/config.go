@@ -31,7 +31,7 @@ type Config struct {
 	L2Coinbase common.Address `mapstructure:"L2Coinbase"`
 	// PrivateKey defines all the key store files that are going
 	// to be read in order to provide the private keys to sign the L1 txs
-	PrivateKey types.KeystoreFileConfig `mapstructure:"PrivateKey"`
+	// PrivateKey types.KeystoreFileConfig `mapstructure:"PrivateKey"` // For X Layer disable this
 	// Batch number where there is a forkid change (fork upgrade)
 	ForkUpgradeBatchNumber uint64
 	// GasOffset is the amount of gas to be added to the gas estimation in order
@@ -66,6 +66,9 @@ type Config struct {
 
 	// MaxBatchesForL1 is the maximum amount of batches to be sequenced in a single L1 tx
 	MaxBatchesForL1 uint64 `mapstructure:"MaxBatchesForL1"`
+
+	// For X Layer
+	DAPermitApiPrivateKey types.KeystoreFileConfig `mapstructure:"DAPermitApiPrivateKey"`
 }
 
 // StreamClientCfg contains the data streamer's configuration properties

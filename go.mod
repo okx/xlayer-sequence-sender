@@ -7,6 +7,7 @@ require github.com/0xPolygon/cdk-data-availability v0.0.7
 require (
 	github.com/0xPolygonHermez/zkevm-data-streamer v0.2.2
 	github.com/0xPolygonHermez/zkevm-ethtx-manager v0.1.9
+	github.com/0xPolygonHermez/zkevm-synchronizer-l1 v0.5.4
 	github.com/ethereum/go-ethereum v1.14.5
 	github.com/hermeznetwork/tracerr v0.3.2
 	github.com/invopop/jsonschema v0.12.0
@@ -24,7 +25,6 @@ require (
 )
 
 require (
-	github.com/0xPolygonHermez/zkevm-synchronizer-l1 v0.5.4 // indirect
 	github.com/DataDog/zstd v1.5.2 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
@@ -132,4 +132,4 @@ require (
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/0xPolygonHermez/zkevm-ethtx-manager => github.com/okx/xlayer-ethtx-manager v0.0.2
+replace github.com/0xPolygonHermez/zkevm-ethtx-manager => github.com/okx/xlayer-ethtx-manager v0.0.3-0.20240807093934-d210b4ec1c31
